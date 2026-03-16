@@ -1,0 +1,4 @@
+assigned_user_id,buyer_fname,buyer_lname,total_leads,total_upsheets,total_opportunities,delivered_upsheets,sold_upsheets,delivered_opportunity_upsheets,close_rate,latest_expected_amount,total_expected_amount,total_sale_value,avg_sale_value,realization_amount,realization_percent,total_leads_for_conversion,leads_with_opportunity,lead_to_opportunity_conversion_rate
+1,Alice,Anderson,2,2,3,1,1,1,50,13800,21600,8500,8500,900,11.84,2,2,100
+2,Bob,Baker,3,1,1,1,0,1,100,8900,8900,0,0,0,0,3,1,33.33
+3,Carol,Clark,1,1,1,1,1,1,100,9400,9400,10250,10250,850,9.04,1,1,100
