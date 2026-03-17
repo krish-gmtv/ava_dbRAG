@@ -22,7 +22,8 @@ class PgConfig:
     port: int = int(os.environ.get("PRECISE_PG_PORT", "5432"))
     dbname: str = os.environ.get("PRECISE_PG_DB", "ava_sandboxV2")
     user: str = os.environ.get("PRECISE_PG_USER", "postgres")
-    password: str = os.environ.get("PRECISE_PG_PASSWORD", "postgres")
+    # No real password is hardcoded; value should come from PRECISE_PG_PASSWORD in .env
+    password: str = os.environ.get("PRECISE_PG_PASSWORD", "")
 
 
 def setup_logging() -> None:
