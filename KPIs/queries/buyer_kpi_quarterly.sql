@@ -113,7 +113,9 @@ Delivered upsheets with opportunities
 delivered_opportunity_upsheets_quarterly_cte AS (
     SELECT
         u.assigned_user_id,
-        date_trunc('quarter', u.delivered_date)::date AS period_start,
+        -- Cohort is defined by opportunity creation time (not delivery time)
+        -- Delivery can happen outside the reporting quarter.
+        date_trunc('quarter', o.created_at)::date AS period_start,
         COUNT(DISTINCT u.upsheet_id) AS delivered_opportunity_upsheets
     FROM upsheets u
     JOIN opportunities o
