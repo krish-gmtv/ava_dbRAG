@@ -35,6 +35,18 @@ def main() -> None:
     parser.add_argument("--query", type=str, required=True)
     parser.add_argument("--use-ava", action="store_true")
     parser.add_argument("--strict-validation", action="store_true")
+    parser.add_argument(
+        "--thread-id",
+        type=str,
+        default="",
+        help="Optional thread id to isolate Ava sessions within the same user.",
+    )
+    parser.add_argument(
+        "--app-user-id",
+        type=str,
+        default="",
+        help="Application user id for Ava session scoping (not auth username).",
+    )
     args = parser.parse_args()
 
     phraser_args = ["--query", args.query]
@@ -42,6 +54,10 @@ def main() -> None:
         phraser_args.append("--use-ava")
     if args.strict_validation:
         phraser_args.append("--strict-validation")
+    if args.thread_id.strip():
+        phraser_args.extend(["--thread-id", args.thread_id.strip()])
+    if args.app_user_id.strip():
+        phraser_args.extend(["--app-user-id", args.app_user_id.strip()])
 
     result = run_json(SCRIPTS_DIR / "ava_phraser_v1.py", phraser_args)
     print(json.dumps(result, indent=2, ensure_ascii=False))

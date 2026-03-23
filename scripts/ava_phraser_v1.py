@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import requests
 from dotenv import load_dotenv
 
 from validate_ava_output_v1 import validate_ava_output
+from ava_safe_phraser import safe_ws_phrase
 
 
 load_dotenv()
@@ -75,62 +75,22 @@ def deterministic_phrase(final_response: Dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def build_ava_prompt(final_response: Dict[str, Any]) -> str:
-    return (
-        "You are a response phrasing layer. Rewrite the provided structured response into concise, natural language.\n"
-        "Hard constraints:\n"
-        "1) Do not change numbers or percentages.\n"
-        "2) Do not invent metrics.\n"
-        "3) Preserve null/NA meaning.\n"
-        "4) Keep answer brief and user-facing.\n\n"
-        f"Structured response JSON:\n{json.dumps(final_response, ensure_ascii=False)}"
-    )
-
-
-def call_ava_phraser(final_response: Dict[str, Any]) -> str:
+def call_ava_phraser(
+    final_response: Dict[str, Any],
+    app_user_id: str,
+    thread_id: str,
+    strict_validation: bool,
+) -> str:
     """
-    Optional Ava phrasing call.
-    Endpoint is intentionally configurable and OFF by default.
+    Ava websocket-based phrasing call with safety checks.
+    If websocket-client or websocket flow fails, caller should catch and fallback.
     """
-    url = os.environ.get("AVA_PHRASER_URL", "").strip()
-    token = os.environ.get("AVA_TOKEN", "").strip()
-    if not url:
-        raise RuntimeError("AVA_PHRASER_URL is not set.")
-    if not token:
-        raise RuntimeError("AVA_TOKEN is not set.")
-
-    prompt = build_ava_prompt(final_response)
-    resp = requests.post(
-        url,
-        headers={
-            "Authorization": token,
-            "Content-Type": "application/json",
-        },
-        json={
-            "prompt": prompt,
-            "temperature": 0,
-        },
-        timeout=60,
+    return safe_ws_phrase(
+        final_response=final_response,
+        app_user_id=app_user_id,
+        thread_id=thread_id,
+        strict_validation=strict_validation,
     )
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Flexible parsing to support different response shapes.
-    if isinstance(data, dict):
-        if isinstance(data.get("text"), str):
-            return data["text"].strip()
-        if isinstance(data.get("response"), str):
-            return data["response"].strip()
-        choices = data.get("choices")
-        if isinstance(choices, list) and choices:
-            c0 = choices[0]
-            if isinstance(c0, dict):
-                msg = c0.get("message")
-                if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                    return msg["content"].strip()
-                if isinstance(c0.get("text"), str):
-                    return c0["text"].strip()
-    raise RuntimeError("Unable to parse Ava phrasing response.")
 
 
 def get_combined_payload(input_json: str, query: str) -> Dict[str, Any]:
@@ -155,6 +115,18 @@ def main() -> None:
     parser.add_argument("--query", type=str, default="")
     parser.add_argument("--use-ava", action="store_true")
     parser.add_argument("--strict-validation", action="store_true")
+    parser.add_argument(
+        "--thread-id",
+        type=str,
+        default="",
+        help="Thread identifier to isolate Ava sessions (optional).",
+    )
+    parser.add_argument(
+        "--app-user-id",
+        type=str,
+        default="",
+        help="Application-level user id (separate from Ava auth credentials).",
+    )
     args = parser.parse_args()
 
     rendered = get_combined_payload(args.input_json, args.query.strip())
@@ -164,11 +136,46 @@ def main() -> None:
     phrasing_mode = "deterministic"
     phrased_text = fallback_text
     ava_error: Optional[str] = None
+    thread_id = (
+        args.thread_id.strip()
+        or os.environ.get("AVA_THREAD_ID", "").strip()
+        or "thread-001"
+    )
+    app_user_id = (
+        args.app_user_id.strip()
+        or os.environ.get("AVA_APP_USER_ID", "").strip()
+        or "app-user-default"
+    )
 
-    if args.use_ava:
+    force_fallback = os.environ.get("AVA_FORCE_FALLBACK", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    ava_enabled = os.environ.get("AVA_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    transport_enabled = os.environ.get("AVA_STREAMING_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    if args.use_ava and not force_fallback and ava_enabled and transport_enabled:
         try:
-            candidate = call_ava_phraser(final_response)
-            report = validate_ava_output(final_response, candidate)
+            candidate = call_ava_phraser(
+                final_response=final_response,
+                app_user_id=app_user_id,
+                thread_id=thread_id,
+                strict_validation=args.strict_validation,
+            )
+            report = validate_ava_output(
+                final_response=final_response,
+                phrased_text=candidate,
+                strict_headings=args.strict_validation,
+            )
             if report["is_valid"]:
                 phrased_text = candidate
                 phrasing_mode = "ava"
@@ -178,8 +185,20 @@ def main() -> None:
         except Exception as exc:
             phrasing_mode = "deterministic_fallback"
             ava_error = str(exc)
+    elif args.use_ava:
+        phrasing_mode = "deterministic_fallback"
+        ava_error = (
+            "Ava call disabled by environment flags: "
+            f"AVA_FORCE_FALLBACK={force_fallback}, "
+            f"AVA_ENABLED={ava_enabled}, "
+            f"AVA_STREAMING_ENABLED={transport_enabled}"
+        )
 
-    validation_report = validate_ava_output(final_response, phrased_text)
+    validation_report = validate_ava_output(
+        final_response=final_response,
+        phrased_text=phrased_text,
+        strict_headings=args.strict_validation,
+    )
     if args.strict_validation and not validation_report["is_valid"]:
         raise SystemExit(f"Validation failed in strict mode: {validation_report}")
 

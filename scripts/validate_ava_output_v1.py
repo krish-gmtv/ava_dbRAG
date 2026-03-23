@@ -61,7 +61,11 @@ def collect_allowed_value_tokens(final_response: Dict[str, Any]) -> Set[str]:
     return tokens
 
 
-def validate_ava_output(final_response: Dict[str, Any], phrased_text: str) -> Dict[str, Any]:
+def validate_ava_output(
+    final_response: Dict[str, Any],
+    phrased_text: str,
+    strict_headings: bool = False,
+) -> Dict[str, Any]:
     """
     Basic safety checks for Ava phrasing output.
     Returns a dict:
@@ -81,7 +85,11 @@ def validate_ava_output(final_response: Dict[str, Any], phrased_text: str) -> Di
     lower_text = phrased_text.lower()
     for w in FORBIDDEN_WORDS:
         if w in lower_text:
-            warnings.append(f"Found hedge term '{w}' in phrased text.")
+            msg = f"Found hedge term '{w}' in phrased text."
+            if strict_headings:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
 
     mode = (final_response.get("mode") or "").strip().lower()
     if mode not in {"precise", "semantic"}:
@@ -103,16 +111,68 @@ def validate_ava_output(final_response: Dict[str, Any], phrased_text: str) -> Di
     allowed_nums = collect_allowed_value_tokens(final_response)
     unexpected = sorted(n for n in output_nums if n not in allowed_nums)
     if unexpected:
-        warnings.append(f"Found numeric tokens not present in structured output: {unexpected[:10]}")
+        msg = f"Found numeric tokens not present in structured output: {unexpected[:10]}"
+        if strict_headings:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
 
     # Stronger check for precise mode: primary metric text should be represented.
     if mode == "precise":
         kpi_snapshot = final_response.get("kpi_snapshot", {}) or {}
         if isinstance(kpi_snapshot, dict):
             primary_values = [str(v) for v in kpi_snapshot.values() if v is not None]
-            if primary_values:
-                if not any(v in phrased_text for v in primary_values):
-                    warnings.append("Precise phrasing does not include any KPI snapshot value verbatim.")
+            if primary_values and not any(v in phrased_text for v in primary_values):
+                msg = "Precise phrasing does not include any KPI snapshot value verbatim."
+                if strict_headings:
+                    errors.append(msg)
+                else:
+                    warnings.append(msg)
+
+    # Optional strict template adherence checks.
+    if strict_headings:
+        heading_positions: Dict[str, int] = {}
+        for h in ("key results:", "notes:", "highlights:", "next:"):
+            pos = lower_text.find(h)
+            if pos >= 0:
+                heading_positions[h] = pos
+
+        if mode == "precise":
+            # Deterministic precise phrasing includes these headings.
+            if "key results:" not in lower_text:
+                errors.append("Missing required heading 'Key results:' for precise mode.")
+            if "next:" not in lower_text:
+                errors.append("Missing required heading 'Next:' for precise mode.")
+            if final_response.get("data_coverage_notes"):
+                if "notes:" not in lower_text:
+                    errors.append("Missing required heading 'Notes:' for precise mode.")
+
+            # Enforce heading order where headings exist.
+            if "key results:" in heading_positions and "next:" in heading_positions:
+                if heading_positions["key results:"] > heading_positions["next:"]:
+                    errors.append("Heading order invalid for precise mode: 'Key results:' must appear before 'Next:'.")
+            if "notes:" in heading_positions and "next:" in heading_positions:
+                if heading_positions["notes:"] > heading_positions["next:"]:
+                    errors.append("Heading order invalid for precise mode: 'Notes:' must appear before 'Next:'.")
+
+            # Reject semantic-only heading in precise mode.
+            if "highlights:" in heading_positions:
+                errors.append("Unexpected heading 'Highlights:' in precise mode output.")
+        elif mode == "semantic":
+            if "next:" not in lower_text:
+                errors.append("Missing required heading 'Next:' for semantic mode.")
+            highlights = final_response.get("highlights") or []
+            if isinstance(highlights, list) and highlights:
+                if "highlights:" not in lower_text:
+                    errors.append("Missing required heading 'Highlights:' for semantic mode.")
+                elif "next:" in heading_positions and heading_positions["highlights:"] > heading_positions["next:"]:
+                    errors.append("Heading order invalid for semantic mode: 'Highlights:' must appear before 'Next:'.")
+
+            # Reject precise-only headings in semantic mode.
+            if "key results:" in heading_positions:
+                errors.append("Unexpected heading 'Key results:' in semantic mode output.")
+            if "notes:" in heading_positions:
+                errors.append("Unexpected heading 'Notes:' in semantic mode output.")
 
     return {"is_valid": len(errors) == 0, "errors": errors, "warnings": warnings}
 
