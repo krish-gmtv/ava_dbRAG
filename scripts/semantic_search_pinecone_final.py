@@ -68,20 +68,40 @@ def ensure_index(cfg: PineconeConfig):
 
 
 def embed_query(query: str, token: str) -> List[float]:
-    resp = requests.post(
-        AVA_EMBEDDINGS_URL,
-        headers={
-            "Authorization": token,  # raw token, no Bearer
-            "Content-Type": "application/json",
-        },
-        json={
-            "texts": [query],
-            "type": "RETRIEVAL_QUERY",
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, 3):  # one retry for transient timeout/network issues
+        try:
+            resp = requests.post(
+                AVA_EMBEDDINGS_URL,
+                headers={
+                    "Authorization": token,  # raw token, no Bearer
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "texts": [query],
+                    "type": "RETRIEVAL_QUERY",
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+            logger.warning(
+                "Ava embeddings request failed (attempt %d/2): %s",
+                attempt,
+                exc,
+            )
+            if attempt == 2:
+                raise RuntimeError(
+                    "Ava embeddings request timed out after retry. "
+                    "Please retry the query or use a precise query."
+                ) from exc
+            continue
+    else:  # pragma: no cover
+        raise RuntimeError(f"Ava embeddings request failed: {last_exc}")
+
     matrix = data.get("embeddings_matrix")
     if not isinstance(matrix, list) or not matrix:
         raise RuntimeError("Unexpected embeddings_matrix format from Ava.")
@@ -212,10 +232,33 @@ def short_snippet(metadata: Dict[str, Any], max_len: int = 200) -> str:
         txt = (metadata.get("embedding_text") or "").strip()
     if not txt:
         return ""
-    first_line = txt.splitlines()[0]
-    if len(first_line) <= max_len:
-        return first_line
-    return first_line[: max_len - 3] + "..."
+    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    primary = lines[0]
+    secondary = ""
+    # Prefer a second line that gives more discriminative business signal.
+    for ln in lines[1:]:
+        lnl = ln.lower()
+        if any(
+            kw in lnl
+            for kw in (
+                "generated",
+                "value generation",
+                "conversion",
+                "execution",
+                "realized sale value",
+                "pricing performance",
+            )
+        ):
+            secondary = ln
+            break
+
+    snippet = f"{primary} {secondary}".strip() if secondary else primary
+    if len(snippet) <= max_len:
+        return snippet
+    return snippet[: max_len - 3] + "..."
 
 
 def main() -> None:

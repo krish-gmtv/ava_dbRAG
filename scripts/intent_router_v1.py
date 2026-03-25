@@ -316,8 +316,9 @@ def build_execution_plan(query: str) -> Dict[str, Any]:
         mode = "precise"
         intent = "buyer_upsheet_listing"
     elif family == "list_buyer_opportunities":
-        handler = "precise_list_buyer_opportunities"
-        mode = "precise"
+        # No precise_list_buyer_opportunities handler in v1; semantic retrieval avoids a hard pipeline failure.
+        handler = "semantic_buyer_performance_summary"
+        mode = "semantic"
         intent = "buyer_opportunity_listing"
     elif family == "buyer_quarter_kpis":
         handler = (

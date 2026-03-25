@@ -18,12 +18,14 @@ def setup_logging() -> None:
     )
 
 
-def run_execute_query(query: str) -> Dict[str, Any]:
+def run_execute_query(query: str, force_precise: bool = False) -> Dict[str, Any]:
     """
     Run execute_query_v1.py and parse its combined JSON output.
     """
     script_path = SCRIPTS_DIR / "execute_query_v1.py"
     cmd = [sys.executable, str(script_path), "--query", query]
+    if force_precise:
+        cmd.append("--force-precise")
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -163,7 +165,10 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
         "kpi_snapshot": kpi_snapshot,
         "supporting_details": supporting_details,
         "data_coverage_notes": notes,
-        "suggested_next_question": "Would you like a quarter-over-quarter trend for this buyer?",
+        "suggested_next_question": (
+            "Would you like the previous quarter's SQL close rate so you can compare it side by side "
+            "with this period?"
+        ),
     }
 
 
@@ -239,6 +244,26 @@ def render_answer(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict[
 
 
 def render_from_combined_payload(combined: Dict[str, Any]) -> Dict[str, Any]:
+    blocked = combined.get("force_precise_unavailable_reason")
+    if isinstance(blocked, str) and blocked.strip():
+        plan = combined.get("execution_plan", {}) or {}
+        final_response = {
+            "mode": "force_precise_unavailable",
+            "request_summary": "SQL / precise data cannot run for this question.",
+            "executive_summary": blocked.strip(),
+            "trend_narrative": "",
+            "highlights": [],
+            "suggested_next_question": (
+                "Turn off Use SQL / precise data for semantic search, or rephrase with "
+                "Buyer N and a quarter or date range."
+            ),
+        }
+        return {
+            "execution_plan": plan,
+            "selected_handler": None,
+            "final_response": final_response,
+        }
+
     plan = combined.get("execution_plan", {}) or {}
     handler_output = combined.get("handler_output", {}) or {}
     final_response = render_answer(plan, handler_output)
@@ -273,13 +298,18 @@ def main() -> None:
         default="",
         help="Optional natural-language query. If provided, this script runs execute_query_v1.py first.",
     )
+    parser.add_argument(
+        "--force-precise",
+        action="store_true",
+        help="Forward to execute_query_v1: require SQL path when possible (see chat UI toggle).",
+    )
     args = parser.parse_args()
 
     if bool(args.input_json) == bool(args.query):
         raise SystemExit("Provide exactly one of --input-json or --query.")
 
     if args.query:
-        combined = run_execute_query(args.query.strip())
+        combined = run_execute_query(args.query.strip(), force_precise=args.force_precise)
     else:
         input_path = Path(args.input_json)
         if not input_path.exists():

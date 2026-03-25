@@ -34,6 +34,15 @@ def run_json(script_path: Path, args: list[str]) -> Dict[str, Any]:
 
 def deterministic_phrase(final_response: Dict[str, Any]) -> str:
     mode = (final_response.get("mode") or "").strip().lower()
+    if mode == "force_precise_unavailable":
+        summary = final_response.get("request_summary", "")
+        detail = final_response.get("executive_summary", "")
+        next_q = final_response.get("suggested_next_question", "")
+        lines = [str(summary or ""), "", str(detail or "")]
+        if next_q:
+            lines.extend(["", f"Next: {next_q}"])
+        return "\n".join(lines).strip()
+
     if mode == "precise":
         request_summary = final_response.get("request_summary", "")
         kpi_snapshot = final_response.get("kpi_snapshot", {}) or {}
@@ -93,7 +102,11 @@ def call_ava_phraser(
     )
 
 
-def get_combined_payload(input_json: str, query: str) -> Dict[str, Any]:
+def get_combined_payload(
+    input_json: str,
+    query: str,
+    force_precise: bool = False,
+) -> Dict[str, Any]:
     if bool(input_json) == bool(query):
         raise SystemExit("Provide exactly one of --input-json or --query.")
     if input_json:
@@ -101,7 +114,10 @@ def get_combined_payload(input_json: str, query: str) -> Dict[str, Any]:
         if not p.exists():
             raise SystemExit(f"Input JSON file not found: {p}")
         return json.loads(p.read_text(encoding="utf-8"))
-    return run_json(SCRIPTS_DIR / "answer_renderer_v1.py", ["--query", query])
+    ar_args = ["--query", query]
+    if force_precise:
+        ar_args.append("--force-precise")
+    return run_json(SCRIPTS_DIR / "answer_renderer_v1.py", ar_args)
 
 
 def main() -> None:
@@ -127,9 +143,21 @@ def main() -> None:
         default="",
         help="Application-level user id (separate from Ava auth credentials).",
     )
+    parser.add_argument(
+        "--force-precise",
+        action="store_true",
+        help=(
+            "Require direct SQL when supported (user toggle). Does not change Ava phrasing; "
+            "only affects retrieval via answer_renderer → execute_query."
+        ),
+    )
     args = parser.parse_args()
 
-    rendered = get_combined_payload(args.input_json, args.query.strip())
+    rendered = get_combined_payload(
+        args.input_json,
+        args.query.strip(),
+        force_precise=args.force_precise,
+    )
     final_response = rendered.get("final_response", {}) or {}
     fallback_text = deterministic_phrase(final_response)
 

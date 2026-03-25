@@ -92,8 +92,11 @@ def validate_ava_output(
                 warnings.append(msg)
 
     mode = (final_response.get("mode") or "").strip().lower()
-    if mode not in {"precise", "semantic"}:
+    if mode not in {"precise", "semantic", "force_precise_unavailable"}:
         warnings.append("Unknown final_response mode.")
+
+    if mode == "force_precise_unavailable":
+        return {"is_valid": True, "errors": errors, "warnings": warnings}
 
     # Ensure the request summary still appears conceptually in the output.
     request_summary = str(final_response.get("request_summary") or "").strip()

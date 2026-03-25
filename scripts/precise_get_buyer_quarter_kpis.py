@@ -68,6 +68,24 @@ def try_parse_date(s: str) -> Optional[date]:
     return None
 
 
+def parse_between_dates(query: str) -> Tuple[Optional[date], Optional[date]]:
+    """
+    Patterns like: between 2026-01-01 and 2026-03-31, from 2018-03-12 to 2018-12-30.
+    """
+    q = query.strip()
+    m = re.search(
+        r"\b(between|from)\s+([0-9]{1,4}[-/.][0-9]{1,2}[-/.][0-9]{1,4})\s+(to|and)\s+"
+        r"([0-9]{1,4}[-/.][0-9]{1,2}[-/.][0-9]{1,4})\b",
+        q,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None, None
+    start = try_parse_date(m.group(2))
+    end = try_parse_date(m.group(4))
+    return start, end
+
+
 def quarter_date_range(year: int, quarter: int) -> Tuple[date, date]:
     if quarter == 1:
         return date(year, 1, 1), date(year, 3, 31)
@@ -349,15 +367,28 @@ def main() -> None:
         year = period_start.year
         quarter = ((period_start.month - 1) // 3) + 1
     else:
-        year = args.year
-        quarter = args.quarter
-        if year is None or quarter is None:
-            py, pq = parse_quarter(q)
-            year = year or py
-            quarter = quarter or pq
-        if year is None or quarter is None:
-            raise SystemExit("Could not determine year/quarter. Provide 'Q<1-4> <year>' or pass --year/--quarter.")
-        period_start, period_end = quarter_date_range(year, quarter)
+        range_start, range_end = parse_between_dates(q)
+        if range_start and range_end:
+            period_start, period_end = range_start, range_end
+            year = period_start.year
+            quarter = ((period_start.month - 1) // 3) + 1
+        else:
+            year = args.year
+            quarter = args.quarter
+            if year is None or quarter is None:
+                py, pq = parse_quarter(q)
+                year = year or py
+                quarter = quarter or pq
+            if year is None or quarter is None:
+                raise SystemExit(
+                    "Could not determine period. Provide 'Q<1-4> <year>', "
+                    "a date range (between YYYY-MM-DD and YYYY-MM-DD), or pass --year/--quarter "
+                    "or --start-date/--end-date."
+                )
+            period_start, period_end = quarter_date_range(year, quarter)
+
+    if period_start > period_end:
+        raise SystemExit("start date must be <= end date.")
 
     cfg = PgConfig()
     logger.info(

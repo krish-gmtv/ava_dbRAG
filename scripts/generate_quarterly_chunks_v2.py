@@ -115,12 +115,19 @@ def build_interpretation_text(
     period_label = f"{year_str} {quarter_str}"
 
     lines = []
+    wl_l = workload_band_label.strip().lower()
+    if wl_l == "low workload":
+        lines.append(
+            f"In {period_label}, despite relatively low lead volume, {buyer_label} showed "
+            f"{conversion_band_label} on lead conversion and {execution_band_label} on closing execution."
+        )
+    else:
+        lines.append(
+            f"In {period_label}, {buyer_label} showed {conversion_band_label} on lead conversion "
+            f"and {execution_band_label} on closing execution."
+        )
     lines.append(
-        f"{buyer_label} recorded {workload_band_label} in {period_label}."
-    )
-    lines.append(
-        f"Lead conversion performance was {conversion_band_label}, "
-        f"while closing execution was {execution_band_label}."
+        f"Activity level (lead volume) was classified as {workload_band_label}."
     )
     lines.append(
         f"The buyer generated {value_band_label}, with pricing performance classified as "

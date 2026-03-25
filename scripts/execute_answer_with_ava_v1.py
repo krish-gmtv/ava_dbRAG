@@ -47,6 +47,11 @@ def main() -> None:
         default="",
         help="Application user id for Ava session scoping (not auth username).",
     )
+    parser.add_argument(
+        "--force-precise",
+        action="store_true",
+        help="Use SQL / precise data when the question supports it (passed through to retrieval).",
+    )
     args = parser.parse_args()
 
     phraser_args = ["--query", args.query]
@@ -54,6 +59,8 @@ def main() -> None:
         phraser_args.append("--use-ava")
     if args.strict_validation:
         phraser_args.append("--strict-validation")
+    if args.force_precise:
+        phraser_args.append("--force-precise")
     if args.thread_id.strip():
         phraser_args.extend(["--thread-id", args.thread_id.strip()])
     if args.app_user_id.strip():

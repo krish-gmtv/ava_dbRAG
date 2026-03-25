@@ -96,7 +96,10 @@ def build_test_input_json(path: Path, mode: str = "semantic") -> None:
                 "data_coverage_notes": [
                     "Close rate is N/A because opportunity_upsheets is zero in this period."
                 ],
-                "suggested_next_question": "Would you like a quarter-over-quarter trend for this buyer?",
+                "suggested_next_question": (
+                    "Would you like the previous quarter's SQL close rate so you can compare it side by side "
+                    "with this period?"
+                ),
             },
         }
     else:

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ava DB RAG - Chat UI v1</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 900px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    input[type="text"] {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px;
+      min-width: 240px;
+    }
+    .chat-log {
+      min-height: 350px;
+      max-height: 60vh;
+      overflow: auto;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+    .msg {
+      margin-bottom: 14px;
+      padding: 10px;
+      border-radius: 8px;
+      line-height: 1.35;
+    }
+    .user { background: #e0ecff; }
+    .bot { background: #eafaf0; }
+    .meta {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 6px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 80px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 10px;
+      resize: vertical;
+      box-sizing: border-box;
+      font-family: inherit;
+      margin-bottom: 10px;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="panel">
+      <h2 style="margin-top: 0;">Ava DB RAG - Chat UI v1</h2>
+      <div class="row">
+        <input id="threadId" type="text" placeholder="thread_id (e.g. thread-001)" />
+        <input id="appUserId" type="text" placeholder="app_user_id (e.g. app-user-123)" />
+      </div>
+      <div class="row">
+        <label><input id="useAva" type="checkbox" /> Use Ava phrasing</label>
+        <label><input id="strictValidation" type="checkbox" /> Strict validation (Ava output checks)</label>
+      </div>
+      <div class="row">
+        <label><input id="forcePrecise" type="checkbox" /> Use SQL / precise data</label>
+      </div>
+      <div class="meta">
+        Ava phrasing is off by default. SQL / precise data forces direct Postgres when a SQL path exists for your query; it does not change wording rules (use Strict validation for that).
+      </div>
+    </div>
+
+    <div class="panel">
+      <div id="chatLog" class="chat-log"></div>
+      <textarea id="queryInput" placeholder="Ask a question..."></textarea>
+      <div class="row">
+        <button id="sendBtn">Send</button>
+        <button id="clearBtn" type="button" style="background:#6b7280;">Clear chat</button>
+      </div>
+      <div id="statusLabel" class="meta"></div>
+    </div>
+  </div>
+
+  <script>
+    const chatLog = document.getElementById("chatLog");
+    const queryInput = document.getElementById("queryInput");
+    const sendBtn = document.getElementById("sendBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const statusLabel = document.getElementById("statusLabel");
+    const threadIdInput = document.getElementById("threadId");
+    const appUserIdInput = document.getElementById("appUserId");
+    const useAvaInput = document.getElementById("useAva");
+    const strictValidationInput = document.getElementById("strictValidation");
+    const forcePreciseInput = document.getElementById("forcePrecise");
+
+    const STORAGE_THREAD_KEY = "ava_db_rag_thread_id";
+    const STORAGE_USER_KEY = "ava_db_rag_app_user_id";
+    const STORAGE_FORCE_PRECISE_KEY = "ava_db_rag_force_precise";
+    let isSending = false;
+
+    function randomId(prefix) {
+      return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function initIdentityFields() {
+      let storedThreadId = localStorage.getItem(STORAGE_THREAD_KEY);
+      let storedAppUserId = localStorage.getItem(STORAGE_USER_KEY);
+
+      if (!storedThreadId) {
+        storedThreadId = randomId("thread");
+        localStorage.setItem(STORAGE_THREAD_KEY, storedThreadId);
+      }
+      if (!storedAppUserId) {
+        storedAppUserId = randomId("app-user");
+        localStorage.setItem(STORAGE_USER_KEY, storedAppUserId);
+      }
+
+      threadIdInput.value = storedThreadId;
+      appUserIdInput.value = storedAppUserId;
+      const storedForce = localStorage.getItem(STORAGE_FORCE_PRECISE_KEY);
+      forcePreciseInput.checked = storedForce === "1";
+    }
+
+    function persistIdentityFields() {
+      const threadId = threadIdInput.value.trim();
+      const appUserId = appUserIdInput.value.trim();
+      if (threadId) {
+        localStorage.setItem(STORAGE_THREAD_KEY, threadId);
+      } else {
+        localStorage.removeItem(STORAGE_THREAD_KEY);
+      }
+      if (appUserId) {
+        localStorage.setItem(STORAGE_USER_KEY, appUserId);
+      } else {
+        localStorage.removeItem(STORAGE_USER_KEY);
+      }
+      localStorage.setItem(STORAGE_FORCE_PRECISE_KEY, forcePreciseInput.checked ? "1" : "0");
+    }
+
+    function appendMessage(role, text, metaText) {
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      const textNode = document.createTextNode(text || "");
+      div.appendChild(textNode);
+      if (metaText) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = metaText;
+        div.appendChild(meta);
+      }
+      chatLog.appendChild(div);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      return { div, textNode };
+    }
+
+    function streamIntoTextNode(textNode, fullText, delayMs = 8) {
+      return new Promise((resolve) => {
+        let i = 0;
+        function tick() {
+          i += 2;
+          textNode.nodeValue = fullText.slice(0, i);
+          chatLog.scrollTop = chatLog.scrollHeight;
+          if (i < fullText.length) {
+            setTimeout(tick, delayMs);
+          } else {
+            resolve();
+          }
+        }
+        textNode.nodeValue = "";
+        tick();
+      });
+    }
+
+    async function sendQuery() {
+      if (isSending) return;
+      const query = queryInput.value.trim();
+      if (!query) return;
+
+      isSending = true;
+      sendBtn.disabled = true;
+      statusLabel.textContent = useAvaInput.checked ? "Calling Ava..." : "Running pipeline...";
+      appendMessage("user", query);
+      queryInput.value = "";
+      persistIdentityFields();
+
+      const loadingMsg = appendMessage("bot", "Working...");
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            thread_id: threadIdInput.value.trim(),
+            app_user_id: appUserIdInput.value.trim(),
+            use_ava: useAvaInput.checked,
+            strict_validation: strictValidationInput.checked,
+            force_precise: forcePreciseInput.checked
+          })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          const detail = data.details ? ` | ${data.details}` : "";
+          loadingMsg.textNode.nodeValue = `Error: ${data.error || "Unknown error"}${detail}`;
+          return;
+        }
+
+        const parts = [
+          `source_mode=${data.source_mode}`,
+          `phrasing_mode=${data.phrasing_mode}`,
+          `force_precise=${data.force_precise ? "on" : "off"}`
+        ];
+        if (data.phrasing_mode === "deterministic_fallback") {
+          parts.push("Fallback response used");
+        }
+        const meta = parts.join(" | ");
+        const displayText = (data.display_text || "").trim() || "No response text returned.";
+        await streamIntoTextNode(loadingMsg.textNode, displayText);
+        const m = document.createElement("div");
+        m.className = "meta";
+        m.textContent = meta;
+        loadingMsg.div.appendChild(m);
+      } catch (err) {
+        loadingMsg.textNode.nodeValue = `Error: ${String(err)}`;
+      } finally {
+        isSending = false;
+        sendBtn.disabled = false;
+        statusLabel.textContent = "";
+        queryInput.focus();
+      }
+    }
+
+    clearBtn.addEventListener("click", () => {
+      chatLog.innerHTML = "";
+      const newThreadId = randomId("thread");
+      threadIdInput.value = newThreadId;
+      localStorage.setItem(STORAGE_THREAD_KEY, newThreadId);
+      statusLabel.textContent = "Started a fresh conversation thread.";
+    });
+
+    threadIdInput.addEventListener("change", persistIdentityFields);
+    appUserIdInput.addEventListener("change", persistIdentityFields);
+    forcePreciseInput.addEventListener("change", persistIdentityFields);
+
+    initIdentityFields();
+    sendBtn.addEventListener("click", sendQuery);
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendQuery();
+      }
+    });
+  </script>
+</body>
+</html>
+
