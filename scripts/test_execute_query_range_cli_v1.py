@@ -1,6 +1,6 @@
 """
-Integration-style test: range timeframe causes KPI subprocess to receive --start-date/--end-date.
-Mocks subprocess only; no database or Pinecone.
+Integration-style test: range timeframe causes listing subprocess to receive
+--start-date/--end-date from the plan. Mocks subprocess only; no database.
 """
 
 import io
@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 import execute_query_v1 as eq
 
 
-class ExecuteQueryKpiRangeCliTests(unittest.TestCase):
-    def test_kpi_subprocess_gets_date_range_from_plan(self) -> None:
+class ExecuteQueryListingRangeCliTests(unittest.TestCase):
+    def test_upsheets_subprocess_gets_date_range_from_plan(self) -> None:
         router_out = {
             "mode": "precise",
             "entity": {"resolved_id": 119},
@@ -23,17 +23,17 @@ class ExecuteQueryKpiRangeCliTests(unittest.TestCase):
                 "end": "2026-03-31",
             },
             "retrieval_plan": {
-                "handler": "precise_get_buyer_quarter_kpis",
-                "query_family": "buyer_quarter_kpis",
+                "handler": "precise_list_buyer_upsheets",
+                "query_family": "list_buyer_upsheets",
             },
             "reason_codes": [],
             "report_template_id": "buyer_detail_v1_precise",
         }
-        kpi_out = {
-            "query_type": "buyer_quarter_kpis",
+        listing_out = {
+            "query_type": "list_buyer_upsheets",
             "params": {"buyer_id": 119},
-            "result": {},
-            "input_query": "Buyer 119 between 2026-01-01 and 2026-03-31",
+            "result": {"row_count": 0, "rows": []},
+            "input_query": "List upsheets for Buyer 119 between 2026-01-01 and 2026-03-31",
         }
         calls: list[list[str]] = []
 
@@ -46,13 +46,13 @@ class ExecuteQueryKpiRangeCliTests(unittest.TestCase):
             if script.endswith("intent_router_v1.py"):
                 m.stdout = json.dumps(router_out)
             else:
-                m.stdout = json.dumps(kpi_out)
+                m.stdout = json.dumps(listing_out)
             return m
 
         argv = [
             "execute_query_v1.py",
             "--query",
-            "Buyer 119 between 2026-01-01 and 2026-03-31",
+            "List upsheets for Buyer 119 between 2026-01-01 and 2026-03-31",
         ]
         buf = io.StringIO()
         with patch.object(sys, "argv", argv):
@@ -60,16 +60,16 @@ class ExecuteQueryKpiRangeCliTests(unittest.TestCase):
                 with patch.object(sys, "stdout", buf):
                     eq.main()
 
-        kpi_cmds = [
-            c for c in calls if any("precise_get_buyer_quarter_kpis" in p for p in c)
+        ups_cmds = [
+            c for c in calls if any("precise_list_buyer_upsheets" in p for p in c)
         ]
-        self.assertEqual(len(kpi_cmds), 1)
-        kpi_cmd = kpi_cmds[0]
-        self.assertIn("--query", kpi_cmd)
-        self.assertIn("--start-date", kpi_cmd)
-        self.assertIn("2026-01-01", kpi_cmd)
-        self.assertIn("--end-date", kpi_cmd)
-        self.assertIn("2026-03-31", kpi_cmd)
+        self.assertEqual(len(ups_cmds), 1)
+        ups_cmd = ups_cmds[0]
+        self.assertIn("--query", ups_cmd)
+        self.assertIn("--start-date", ups_cmd)
+        self.assertIn("2026-01-01", ups_cmd)
+        self.assertIn("--end-date", ups_cmd)
+        self.assertIn("2026-03-31", ups_cmd)
 
 
 if __name__ == "__main__":

@@ -139,6 +139,13 @@ def safe_ws_phrase(
         except Exception:
             # best-effort only
             pass
+        # Important: if we closed the session but keep the cached session_id,
+        # the next request will likely reuse a stale session and can block on WS timeouts.
+        try:
+            invalidate_thread_session(app_user_id=app_user_id, thread_id=thread_id)
+        except Exception:
+            # best-effort only
+            pass
 
     return full_text
 

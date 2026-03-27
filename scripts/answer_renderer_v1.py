@@ -100,12 +100,25 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
     if period_label:
         if "close rate" in input_query and query_type == "buyer_quarter_kpis":
             request_summary = f"Buyer {buyer_id} close rate for {period_label}."
+        elif query_type == "list_buyer_opportunities":
+            request_summary = f"Buyer {buyer_id} opportunities for {period_label} (by created date)."
+        elif query_type == "list_buyer_upsheets":
+            request_summary = f"Buyer {buyer_id} upsheets for {period_label}."
         else:
             request_summary = f"Buyer {buyer_id} performance for {period_label}."
     elif start_date and end_date:
-        request_summary = (
-            f"Buyer {buyer_id} records for period {start_date} to {end_date}."
-        )
+        if query_type == "list_buyer_opportunities":
+            request_summary = (
+                f"Buyer {buyer_id} opportunities for {start_date} to {end_date} (by created date)."
+            )
+        elif query_type == "list_buyer_upsheets":
+            request_summary = (
+                f"Buyer {buyer_id} upsheets for {start_date} to {end_date}."
+            )
+        else:
+            request_summary = (
+                f"Buyer {buyer_id} records for period {start_date} to {end_date}."
+            )
     else:
         request_summary = f"Buyer {buyer_id} precise result."
 
@@ -137,6 +150,15 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
         supporting_details = {
             "first_rows_preview": rows[:3],
         }
+    elif query_type == "list_buyer_opportunities":
+        rows = result.get("rows", []) or []
+        row_count = result.get("row_count", len(rows))
+        kpi_snapshot = {
+            "total_opportunities": row_count,
+        }
+        supporting_details = {
+            "first_rows_preview": rows[:3],
+        }
     else:
         # Safe fallback for any future precise handler.
         kpi_snapshot = {"result_type": query_type or "precise"}
@@ -150,6 +172,10 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
             notes.append(
                 "Close rate is N/A because opportunity_upsheets is zero in this period."
             )
+    if query_type == "list_buyer_opportunities":
+        notes.append(
+            "Rows filtered by opportunities.created_at (not upsheet insert date)."
+        )
     provenance = handler_output.get("provenance", {}) or {}
     database = provenance.get("database")
     if database:

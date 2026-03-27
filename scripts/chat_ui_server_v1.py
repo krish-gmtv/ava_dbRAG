@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 UI_HTML_PATH = ROOT_DIR / "ui" / "chat_ui_v1.html"
 THREAD_CONTEXT: Dict[str, Dict[str, Any]] = {}
+THREAD_CONTEXT_LOCK = threading.RLock()
 
 BUYER_PATTERN = re.compile(r"\bbuyer\s*\d+\b", re.IGNORECASE)
 DOMAIN_KEYWORDS = (
@@ -195,10 +197,15 @@ def build_trend_followup_query(ctx: Dict[str, Any]) -> str:
 
 
 def get_thread_ctx(thread_id: str) -> Dict[str, Any]:
-    key = thread_id.strip() or "__default__"
-    if key not in THREAD_CONTEXT:
-        THREAD_CONTEXT[key] = {}
-    return THREAD_CONTEXT[key]
+    key = (thread_id or "").strip()
+    if not key:
+        # Do not share a global "__default__" bucket across concurrent clients.
+        # Without a stable thread_id, follow-up state should not persist anyway.
+        return {}
+    with THREAD_CONTEXT_LOCK:
+        if key not in THREAD_CONTEXT:
+            THREAD_CONTEXT[key] = {}
+        return THREAD_CONTEXT[key]
 
 
 def extract_period_parts(
@@ -283,24 +290,25 @@ def detect_pending_followups(suggested_next: str) -> Dict[str, bool]:
 
 
 def update_thread_ctx(thread_id: str, pipeline_output: Dict[str, Any]) -> None:
-    ctx = get_thread_ctx(thread_id)
-    plan = (pipeline_output.get("execution_plan") or {}) if isinstance(pipeline_output, dict) else {}
-    entity = (plan.get("entity") or {}) if isinstance(plan, dict) else {}
-    timeframe = (plan.get("timeframe") or {}) if isinstance(plan, dict) else {}
-    final_response = (pipeline_output.get("final_response") or {}) if isinstance(pipeline_output, dict) else {}
-    request_summary = str(final_response.get("request_summary") or "")
-    suggested_next = (final_response.get("suggested_next_question") or "").lower()
+    with THREAD_CONTEXT_LOCK:
+        ctx = get_thread_ctx(thread_id)
+        plan = (pipeline_output.get("execution_plan") or {}) if isinstance(pipeline_output, dict) else {}
+        entity = (plan.get("entity") or {}) if isinstance(plan, dict) else {}
+        timeframe = (plan.get("timeframe") or {}) if isinstance(plan, dict) else {}
+        final_response = (pipeline_output.get("final_response") or {}) if isinstance(pipeline_output, dict) else {}
+        request_summary = str(final_response.get("request_summary") or "")
+        suggested_next = (final_response.get("suggested_next_question") or "").lower()
 
-    ctx["buyer_id"] = entity.get("resolved_id")
-    period_parts = extract_period_parts(timeframe=timeframe, request_summary=request_summary)
-    if period_parts["period_quarter"] is not None:
-        ctx["period_quarter"] = period_parts["period_quarter"]
-    if period_parts["period_year"] is not None:
-        ctx["period_year"] = period_parts["period_year"]
+        ctx["buyer_id"] = entity.get("resolved_id")
+        period_parts = extract_period_parts(timeframe=timeframe, request_summary=request_summary)
+        if period_parts["period_quarter"] is not None:
+            ctx["period_quarter"] = period_parts["period_quarter"]
+        if period_parts["period_year"] is not None:
+            ctx["period_year"] = period_parts["period_year"]
 
-    pending = detect_pending_followups(suggested_next)
-    ctx["pending_exact_kpi_followup"] = pending["pending_exact_kpi_followup"]
-    ctx["pending_trend_followup"] = pending["pending_trend_followup"]
+        pending = detect_pending_followups(suggested_next)
+        ctx["pending_exact_kpi_followup"] = pending["pending_exact_kpi_followup"]
+        ctx["pending_trend_followup"] = pending["pending_trend_followup"]
 
 
 def guardrail_response(
@@ -498,14 +506,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                 candidate = build_precise_followup_query(thread_ctx)
                 if candidate:
                     rewritten_query = candidate
-                    thread_ctx["pending_exact_kpi_followup"] = False
-                    thread_ctx["pending_trend_followup"] = False
+                    with THREAD_CONTEXT_LOCK:
+                        thread_ctx["pending_exact_kpi_followup"] = False
+                        thread_ctx["pending_trend_followup"] = False
             elif bool(thread_ctx.get("pending_trend_followup")):
                 candidate = build_trend_followup_query(thread_ctx)
                 if candidate:
                     rewritten_query = candidate
-                    thread_ctx["pending_exact_kpi_followup"] = False
-                    thread_ctx["pending_trend_followup"] = False
+                    with THREAD_CONTEXT_LOCK:
+                        thread_ctx["pending_exact_kpi_followup"] = False
+                        thread_ctx["pending_trend_followup"] = False
 
         if should_guardrail_query(rewritten_query):
             mode = "greeting" if is_greeting(query) else "offtopic"
@@ -531,7 +541,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             )
         except Exception as exc:
             err_text = str(exc)
-            if "Read timed out" in err_text or "timed out after retry" in err_text:
+            # Be robust to upstream timeout phrasing variants; keep the graceful
+            # temporary fallback for user experience during transient failures.
+            if re.search(
+                r"(read\s+timed\s+out|timed\s+out\s+after\s+retry|timed\s+out|timeout|etimedout|readtimeout|connect\s+timeout)",
+                err_text,
+                flags=re.IGNORECASE,
+            ):
                 self._send_json(
                     HTTPStatus.OK,
                     temporary_service_fallback_response(

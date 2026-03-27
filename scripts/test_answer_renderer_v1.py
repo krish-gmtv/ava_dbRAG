@@ -177,7 +177,7 @@ def validate(plan: Dict[str, Any], handler_output: Dict[str, Any], final_respons
         raise AssertionError(f"Unexpected mode: {final_response.get('mode')}")
 
 
-def test_one(query: str, sleep_seconds: float) -> Tuple[bool, str]:
+def run_one_query_case(query: str, sleep_seconds: float) -> Tuple[bool, str]:
     execute_script = os.path.join(SCRIPTS_DIR, "execute_query_v1.py")
     renderer_script = os.path.join(SCRIPTS_DIR, "answer_renderer_v1.py")
 
@@ -262,7 +262,7 @@ def main() -> None:
 
         print(f"[{i+1}/{total}] Testing: {q}")
         try:
-            ok, msg = test_one(q, args.sleep_seconds)
+            ok, msg = run_one_query_case(q, args.sleep_seconds)
             if ok:
                 passed += 1
                 print(f"  PASS: {msg}")

@@ -307,9 +307,6 @@ def build_execution_plan(query: str) -> Dict[str, Any]:
     family = classify_query_family(query)
     mode, mode_reasons = choose_mode(precise_reasons, semantic_reasons, family)
 
-    # Include raw signals once plus the final decision reasons
-    reason_codes = sorted(set(precise_reasons + semantic_reasons + mode_reasons))
-
     if family == "list_buyer_upsheets":
         # list_* families are always precise in v1
         handler = "precise_list_buyer_upsheets"
@@ -321,15 +318,17 @@ def build_execution_plan(query: str) -> Dict[str, Any]:
         mode = "semantic"
         intent = "buyer_opportunity_listing"
     elif family == "buyer_quarter_kpis":
-        handler = (
-            "precise_get_buyer_quarter_kpis"
-            if mode == "precise"
-            else "semantic_buyer_performance_summary"
-        )
+        # KPI / metric questions use semantic retrieval (precomputed quarterly summaries in Pinecone).
+        # Precise SQL in this project is reserved for direct table row lookups (upsheets, opportunities).
+        handler = "semantic_buyer_performance_summary"
+        mode = "semantic"
         intent = "buyer_quarter_kpis"
+        mode_reasons = ["decision:semantic_kpi_only"]
     else:
         handler = "semantic_buyer_performance_summary"
         intent = "buyer_performance"
+
+    reason_codes = sorted(set(precise_reasons + semantic_reasons + mode_reasons))
 
     plan: Dict[str, Any] = {
         "intent": intent,

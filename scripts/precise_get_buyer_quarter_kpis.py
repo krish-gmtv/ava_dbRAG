@@ -298,7 +298,24 @@ def fetch_buyer_quarter_kpis(
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, (buyer_id, period_start.isoformat(), period_end.isoformat()))
         row = cur.fetchone()
-    return dict(row or {})
+    kpis = dict(row or {})
+    _normalize_close_rate_when_no_opportunities(kpis)
+    return kpis
+
+
+def _normalize_close_rate_when_no_opportunities(kpis: Dict[str, Any]) -> None:
+    """
+    SQL uses delivered_opportunity_upsheets / NULLIF(opportunity_upsheets, 0); when the
+    denominator is zero the quotient is NULL. For reporting, treat that as 0% closed.
+    """
+    ou = kpis.get("opportunity_upsheets")
+    try:
+        ou_n = int(ou) if ou is not None else 0
+    except (TypeError, ValueError):
+        ou_n = 0
+    cr = kpis.get("close_rate")
+    if ou_n == 0 and (cr is None or cr == ""):
+        kpis["close_rate"] = 0.0
 
 
 def build_payload(
