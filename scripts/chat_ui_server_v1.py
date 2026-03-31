@@ -177,13 +177,14 @@ def _prev_quarter(year: int, quarter: int) -> tuple[int, int]:
     return year - 1, 4
 
 
-def build_precise_followup_query(ctx: Dict[str, Any]) -> str:
+def build_list_upsheets_followup_query(ctx: Dict[str, Any]) -> str:
+    """Rewrite 'yes' after a semantic summary into a precise upsheets listing query."""
     buyer_id = ctx.get("buyer_id")
     year = ctx.get("period_year")
     quarter = ctx.get("period_quarter")
     if buyer_id is None or year is None or quarter is None:
         return ""
-    return f"What was Buyer {buyer_id}'s close rate in Q{quarter} {year}?"
+    return f"List all upsheets for Buyer {buyer_id} in Q{quarter} {year}?"
 
 
 def build_trend_followup_query(ctx: Dict[str, Any]) -> str:
@@ -193,7 +194,7 @@ def build_trend_followup_query(ctx: Dict[str, Any]) -> str:
     if buyer_id is None or year is None or quarter is None:
         return ""
     py, pq = _prev_quarter(int(year), int(quarter))
-    return f"What was Buyer {buyer_id}'s close rate in Q{pq} {py}?"
+    return f"How did Buyer {buyer_id} perform in Q{pq} {py}?"
 
 
 def get_thread_ctx(thread_id: str) -> Dict[str, Any]:
@@ -243,7 +244,7 @@ def extract_period_parts(
             start_dt = datetime.strptime(start_tf, "%Y-%m-%d")
             if year is None:
                 year = start_dt.year
-            if quarter is None and granularity == "quarter":
+            if quarter is None and granularity in ("quarter", "range"):
                 quarter = ((start_dt.month - 1) // 3) + 1
         except ValueError:
             pass
@@ -258,14 +259,16 @@ def detect_pending_followups(suggested_next: str) -> Dict[str, bool]:
     text = (suggested_next or "").strip().lower()
     if not text:
         return {
-            "pending_exact_kpi_followup": False,
+            "pending_listing_followup": False,
             "pending_trend_followup": False,
         }
 
-    pending_exact = (
-        "exact kpi values" in text
-        or ("exact" in text and "kpi" in text)
-        or ("direct sql" in text and "same period" in text)
+    # After semantic summaries, we offer Postgres row listings (upsheets/opportunities), not KPI SQL.
+    pending_listing = (
+        "list upsheets" in text
+        or ("postgres" in text and "list" in text)
+        or ("say yes" in text and "upsheets" in text)
+        or ("row listing" in text and "period" in text)
     )
     pending_trend = (
         "quarter-over-quarter trend" in text
@@ -284,7 +287,7 @@ def detect_pending_followups(suggested_next: str) -> Dict[str, bool]:
     )
 
     return {
-        "pending_exact_kpi_followup": pending_exact,
+        "pending_listing_followup": pending_listing,
         "pending_trend_followup": pending_trend,
     }
 
@@ -307,8 +310,63 @@ def update_thread_ctx(thread_id: str, pipeline_output: Dict[str, Any]) -> None:
             ctx["period_year"] = period_parts["period_year"]
 
         pending = detect_pending_followups(suggested_next)
-        ctx["pending_exact_kpi_followup"] = pending["pending_exact_kpi_followup"]
+        ctx["pending_listing_followup"] = pending["pending_listing_followup"]
         ctx["pending_trend_followup"] = pending["pending_trend_followup"]
+
+
+def is_gratitude(query: str) -> bool:
+    q = (query or "").strip().lower()
+    q = re.sub(r"[^a-z0-9\s]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    if not q:
+        return False
+    phrases = (
+        "thanks",
+        "thank you",
+        "thx",
+        "ty",
+        "ok thanks",
+        "okay thanks",
+        "thanks ok",
+        "appreciate it",
+        "much appreciated",
+        "cheers",
+    )
+    if q in phrases:
+        return True
+    if (q.startswith("thanks") or q.startswith("thank you")) and len(q) <= 48:
+        return True
+    return False
+
+
+def gratitude_response(
+    query: str,
+    thread_id: str,
+    app_user_id: str,
+) -> Dict[str, Any]:
+    return {
+        "query": query,
+        "thread_id": thread_id,
+        "app_user_id": app_user_id,
+        "display_text": (
+            "You're welcome. Ask another buyer question any time, for example:\n"
+            "- How did Buyer 1 perform in Q1 2018?\n"
+            "- List all upsheets for Buyer 2 in Q1 2018"
+        ),
+        "phrasing_mode": "ui_gratitude",
+        "source_mode": "gratitude",
+        "selected_handler": None,
+        "report_template_id": None,
+        "raw": {
+            "execution_plan": None,
+            "selected_handler": None,
+            "final_response": None,
+            "phrasing": {
+                "mode": "ui_gratitude",
+                "text": "Short gratitude acknowledgement.",
+            },
+        },
+    }
 
 
 def guardrail_response(
@@ -500,21 +558,32 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         # Follow-through behavior: if the previous response suggested a next step and user affirms,
         # execute that recommendation for the same buyer/period.
+        if is_gratitude(query):
+            self._send_json(
+                HTTPStatus.OK,
+                gratitude_response(
+                    query=query,
+                    thread_id=thread_id,
+                    app_user_id=app_user_id,
+                ),
+            )
+            return
+
         rewritten_query = query
         if is_affirmative(query):
-            if bool(thread_ctx.get("pending_exact_kpi_followup")):
-                candidate = build_precise_followup_query(thread_ctx)
+            if bool(thread_ctx.get("pending_listing_followup")):
+                candidate = build_list_upsheets_followup_query(thread_ctx)
                 if candidate:
                     rewritten_query = candidate
                     with THREAD_CONTEXT_LOCK:
-                        thread_ctx["pending_exact_kpi_followup"] = False
+                        thread_ctx["pending_listing_followup"] = False
                         thread_ctx["pending_trend_followup"] = False
             elif bool(thread_ctx.get("pending_trend_followup")):
                 candidate = build_trend_followup_query(thread_ctx)
                 if candidate:
                     rewritten_query = candidate
                     with THREAD_CONTEXT_LOCK:
-                        thread_ctx["pending_exact_kpi_followup"] = False
+                        thread_ctx["pending_listing_followup"] = False
                         thread_ctx["pending_trend_followup"] = False
 
         if should_guardrail_query(rewritten_query):

@@ -12,10 +12,13 @@ import requests
 
 from ava_session_manager import get_session_id
 
+from intent_router_v1 import period_from_execution_plan
+
 from precise_sql_templates_v1 import (
     combine_precise_extra_args,
     kpi_range_cli_from_plan,
     precise_cli_args_from_plan,
+    semantic_cli_args_from_plan,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,8 +219,9 @@ def resolve_force_precise_handler(
         # Aggregated KPI SQL is not part of the "precise = direct table lookup" contract.
         if handler == "precise_get_buyer_quarter_kpis":
             return None, (
-                "Use SQL / precise data is for direct table listings (upsheets, opportunities), "
-                "not KPI aggregates. Turn off the toggle for KPI and performance summaries."
+                "KPI aggregates are not served through Use SQL / precise in this app. "
+                "That toggle is for raw Postgres row listings (upsheets, opportunities). "
+                "Turn off the toggle for KPI and performance answers."
             )
         return handler, None
 
@@ -232,29 +236,30 @@ def resolve_force_precise_handler(
 
     if family == "buyer_quarter_kpis":
         return None, (
-            "KPI and metric questions use semantic retrieval (precomputed summaries). "
-            "Use SQL / precise for listing upsheets or opportunities, or turn off the toggle."
+            "KPI and metric questions use semantic retrieval (precomputed quarterly summaries). "
+            "Turn off Use SQL / precise for those answers, or ask for a row listing "
+            "(e.g. list upsheets or list opportunities) with the toggle on."
         )
 
     if family == "list_buyer_opportunities":
         if planner_v2_enabled:
             return "precise_list_buyer_opportunities", None
         return None, (
-            "This question does not have a precise SQL path yet (buyer opportunities). "
-            "Turn off Use SQL / precise data to use semantic search, or rephrase using "
-            "buyer upsheets or KPIs with Buyer N and a period (for example Q1 2026)."
+            "Could not map this to an opportunities SQL listing. "
+            "Turn off Use SQL / precise for semantic search, or ask e.g. "
+            "'List opportunities for Buyer N in Q1 2026' with the toggle on."
         )
 
     if family == "buyer_performance_summary":
         return None, (
-            "Performance summaries use semantic retrieval. "
-            "Use SQL / precise only for direct listings, e.g. 'List upsheets for Buyer N in Q1 2018' "
-            "or 'List opportunities for Buyer N in Q1 2018', or turn off the toggle."
+            "Performance questions use semantic retrieval, not the SQL listing toggle. "
+            "Turn off Use SQL / precise for summaries, or ask e.g. "
+            "'List upsheets for Buyer N in Q1 2026' with the toggle on."
         )
 
     return None, (
-        "This question does not have a mapped precise SQL path (upsheets or opportunities listings). "
-        "Turn off Use SQL / precise data for semantic search."
+        "No mapped SQL listing path for this question (upsheets or opportunities). "
+        "Turn off Use SQL / precise for semantic search, or ask for a listing with Buyer N and a period."
     )
 
 
@@ -402,9 +407,19 @@ def main() -> None:
     # 2) Execute handler
     logger.info("Executing handler=%s via %s", handler, script_path.name)
     extra_args = combine_precise_extra_args(handler, plan)
+    if handler == "semantic_buyer_performance_summary":
+        extra_args = semantic_cli_args_from_plan(plan)
     handler_output = run_python_json(
         script_path, q, extra_args=extra_args if extra_args else None
     )
+
+    if handler == "semantic_buyer_performance_summary" and isinstance(handler_output, dict):
+        py, pq = period_from_execution_plan(plan)
+        params = handler_output.setdefault("params", {})
+        if py is not None:
+            params["period_year"] = py
+        if pq is not None:
+            params["period_quarter"] = pq
 
     # 3) Combined normalized payload
     combined = {

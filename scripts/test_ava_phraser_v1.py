@@ -97,8 +97,8 @@ def build_test_input_json(path: Path, mode: str = "semantic") -> None:
                     "Close rate is N/A because opportunity_upsheets is zero in this period."
                 ],
                 "suggested_next_question": (
-                    "Would you like the previous quarter's SQL close rate so you can compare it side by side "
-                    "with this period?"
+                    "Would you like a Postgres row listing for the same buyer and period? "
+                    "Reply yes to list upsheets, or ask to list opportunities for the same quarter."
                 ),
             },
         }
@@ -108,15 +108,21 @@ def build_test_input_json(path: Path, mode: str = "semantic") -> None:
             "selected_handler": "semantic_buyer_performance_summary",
             "final_response": {
                 "mode": "semantic",
-                "request_summary": "Semantic performance summary for Buyer1 User1 in Q1 2018.",
+                "request_summary": "Buyer 1 performance summary for Q1 2018.",
                 "executive_summary": "Buyer1 User1 recorded low workload in 2018 Q1.",
-                "trend_narrative": "The retrieved quarterly summary for Buyer1 User1 in Q1 2018 indicates: Buyer1 User1 recorded low workload in 2018 Q1.",
+                "trend_narrative": "The retrieved quarterly summary for Buyer 1 in Q1 2018 indicates: Buyer1 User1 recorded low workload in 2018 Q1.",
                 "key_drivers": [
                     "Driver-level details are not included in this semantic result (summary snippet only)."
                 ],
                 "highlights": ["Top matched document: Buyer1 User1 - Q1 2018."],
-                "confidence_note": "Narrative is based on semantic retrieval over precomputed quarterly KPI summaries.",
-                "suggested_next_question": "Would you like exact KPI values from direct SQL for this same period?",
+                "confidence_note": (
+                    "Performance and KPI narrative here comes from semantic retrieval (precomputed quarterly summaries). "
+                    "The SQL / precise toggle is for raw Postgres row listings (upsheets, opportunities), not this summary."
+                ),
+                "suggested_next_question": (
+                    "Would you like a Postgres row listing for the same buyer and period? "
+                    "Reply yes to list upsheets, or ask to list opportunities for the same quarter."
+                ),
             },
         }
     path.write_text(json.dumps(payload), encoding="utf-8")

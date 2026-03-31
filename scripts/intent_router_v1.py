@@ -86,6 +86,12 @@ def parse_between_dates(query: str) -> Tuple[Optional[date], Optional[date], Opt
     end_raw = m.group(4)
     start = try_parse_date(start_raw)
     end = try_parse_date(end_raw)
+    # Recover common typo: 01-01-208 when the other bound is clearly 20xx.
+    if start and end and start.year < 1000 <= end.year:
+        try:
+            start = date(end.year, start.month, start.day)
+        except ValueError:
+            pass
     raw = m.group(0)
     return start, end, raw
 
@@ -149,6 +155,63 @@ def parse_timeframe(query: str) -> Dict[str, Any]:
         "end": None,
         "granularity": None,
     }
+
+
+def infer_quarter_from_date_range(start: date, end: date) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Map an inclusive date range to (period_year, period_quarter), or year-only when
+    the range is not a single calendar quarter (or is a full Jan 1 .. Dec 31 year).
+    """
+    if start > end:
+        return None, None
+    for y in range(start.year, end.year + 1):
+        for q in range(1, 5):
+            qs, qe = quarter_date_range(y, q)
+            if start >= qs and end <= qe:
+                return y, q
+    if start == date(start.year, 1, 1) and end == date(start.year, 12, 31):
+        return start.year, None
+    if start.year == end.year:
+        return start.year, None
+    return None, None
+
+
+def period_from_execution_plan(plan: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Derive (period_year, period_quarter) from the router's normalized timeframe.
+    Used to align semantic search + answer headlines with explicit dates (ranges, years, quarters).
+    """
+    tf = plan.get("timeframe") or {}
+    gran = str(tf.get("granularity") or "").strip().lower()
+    if gran == "quarter":
+        raw = str(tf.get("raw_text") or "")
+        y, q = parse_quarter_year(raw)
+        if y is not None and q is not None:
+            return y, q
+        st = tf.get("start")
+        if isinstance(st, str) and len(st) >= 10:
+            try:
+                d = date.fromisoformat(st[:10])
+                qn = (d.month - 1) // 3 + 1
+                return d.year, qn
+            except ValueError:
+                pass
+    if gran == "range":
+        st = tf.get("start")
+        en = tf.get("end")
+        if isinstance(st, str) and isinstance(en, str) and len(st) >= 10 and len(en) >= 10:
+            try:
+                sd = date.fromisoformat(st[:10])
+                ed = date.fromisoformat(en[:10])
+                return infer_quarter_from_date_range(sd, ed)
+            except ValueError:
+                pass
+    if gran == "year":
+        raw = str(tf.get("raw_text") or "")
+        m = re.search(r"\b(19\d{2}|20\d{2})\b", raw)
+        if m:
+            return int(m.group(1)), None
+    return None, None
 
 
 # -----------------------------

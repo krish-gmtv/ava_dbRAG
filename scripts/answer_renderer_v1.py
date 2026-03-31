@@ -1,10 +1,13 @@
 import argparse
 import json
 import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from intent_router_v1 import period_from_execution_plan
 
 
 logger = logging.getLogger(__name__)
@@ -82,45 +85,126 @@ def format_amount(value: Any) -> str:
     return f"{n:.2f}"
 
 
+def buyer_label_for_report(
+    buyer_id: Any,
+    buyer_name_fallback: str,
+    entity: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Prefer numeric Buyer id so successive questions read the same way
+    (Buyer 1 … vs Buyer 2 …) regardless of display name from retrieval.
+    """
+    rid = buyer_id
+    if rid is None and entity:
+        rid = entity.get("resolved_id")
+    if rid is not None:
+        return f"Buyer {rid}"
+    name = (buyer_name_fallback or "").strip()
+    if name:
+        return name
+    return "the requested buyer"
+
+
+def period_phrase_for_report(
+    params: Dict[str, Any], plan: Optional[Dict[str, Any]] = None
+) -> str:
+    plan_py: Optional[int] = None
+    plan_pq: Optional[int] = None
+    if plan:
+        plan_py, plan_pq = period_from_execution_plan(plan)
+    year = params.get("period_year")
+    quarter = params.get("period_quarter")
+    if year is None:
+        year = plan_py
+    if quarter is None:
+        quarter = plan_pq
+    start_date = params.get("start_date") or params.get("period_start")
+    end_date = params.get("end_date") or params.get("period_end")
+    if year is not None and quarter is not None:
+        return f"Q{quarter} {year}"
+    if year is not None and quarter is None:
+        return f"{year}"
+    if start_date and end_date:
+        return f"{start_date} to {end_date}"
+    tf = (plan or {}).get("timeframe") or {}
+    ts = tf.get("start")
+    te = tf.get("end")
+    if ts and te:
+        return f"{ts} to {te}"
+    raw = tf.get("raw_text")
+    if isinstance(raw, str):
+        m = re.search(r"\b(19\d{2}|20\d{2})\b", raw)
+        if m:
+            return m.group(1)
+    return "the requested period"
+
+
+def infer_kpi_subject_from_query(q: str) -> str:
+    ql = (q or "").lower()
+    if "close rate" in ql:
+        return "close rate"
+    if "conversion" in ql:
+        return "conversion rate"
+    if "total sale" in ql or ("sale" in ql and "value" in ql):
+        return "total sale value"
+    if "total lead" in ql or "lead count" in ql:
+        return "total leads"
+    if "kpi" in ql or "metric" in ql or "metrics" in ql:
+        return "KPI metrics"
+    return "performance metrics"
+
+
+def subject_phrase_precise(query_type: str, input_query: str) -> str:
+    qt = (query_type or "").strip()
+    if qt == "list_buyer_upsheets":
+        return "upsheets"
+    if qt == "list_buyer_opportunities":
+        return "opportunities"
+    if qt == "buyer_quarter_kpis":
+        return infer_kpi_subject_from_query(input_query)
+    return "query results"
+
+
+def subject_phrase_semantic(plan: Dict[str, Any], input_query: str) -> str:
+    rp = plan.get("retrieval_plan") or {}
+    family = str(rp.get("query_family") or "").strip()
+    intent = str(plan.get("intent") or "").strip()
+    q = (input_query or "").lower()
+    if family == "list_buyer_upsheets":
+        return "upsheets"
+    if family == "list_buyer_opportunities" or intent == "buyer_opportunity_listing":
+        return "opportunities"
+    if family == "buyer_quarter_kpis":
+        return infer_kpi_subject_from_query(input_query)
+    if family == "buyer_performance_summary":
+        if "trend" in q:
+            return "performance trend"
+        if "overall" in q or "doing" in q:
+            return "overall performance"
+        return "performance summary"
+    if "trend" in q:
+        return "performance trend"
+    return "performance summary"
+
+
+def standard_report_line(buyer_label: str, subject_phrase: str, period_phrase: str) -> str:
+    """Shared headline grammar for precise listings and semantic summaries."""
+    return f"{buyer_label} {subject_phrase} for {period_phrase}."
+
+
 def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict[str, Any]:
     params = handler_output.get("params", {}) or {}
     result = handler_output.get("result", {}) or {}
     query_type = handler_output.get("query_type", "")
 
     buyer_id = params.get("buyer_id")
-    year = params.get("period_year")
-    quarter = params.get("period_quarter")
-    start_date = params.get("start_date") or params.get("period_start")
-    end_date = params.get("end_date") or params.get("period_end")
     input_query = (handler_output.get("input_query") or "").lower().strip()
+    entity = plan.get("entity") or {}
 
-    period_label = (
-        f"Q{quarter} {year}" if year is not None and quarter is not None else None
-    )
-    if period_label:
-        if "close rate" in input_query and query_type == "buyer_quarter_kpis":
-            request_summary = f"Buyer {buyer_id} close rate for {period_label}."
-        elif query_type == "list_buyer_opportunities":
-            request_summary = f"Buyer {buyer_id} opportunities for {period_label} (by created date)."
-        elif query_type == "list_buyer_upsheets":
-            request_summary = f"Buyer {buyer_id} upsheets for {period_label}."
-        else:
-            request_summary = f"Buyer {buyer_id} performance for {period_label}."
-    elif start_date and end_date:
-        if query_type == "list_buyer_opportunities":
-            request_summary = (
-                f"Buyer {buyer_id} opportunities for {start_date} to {end_date} (by created date)."
-            )
-        elif query_type == "list_buyer_upsheets":
-            request_summary = (
-                f"Buyer {buyer_id} upsheets for {start_date} to {end_date}."
-            )
-        else:
-            request_summary = (
-                f"Buyer {buyer_id} records for period {start_date} to {end_date}."
-            )
-    else:
-        request_summary = f"Buyer {buyer_id} precise result."
+    period_phrase = period_phrase_for_report(params, plan)
+    buyer_label = buyer_label_for_report(buyer_id, "", entity)
+    subject = subject_phrase_precise(query_type, input_query)
+    request_summary = standard_report_line(buyer_label, subject, period_phrase)
 
     kpi_snapshot: Dict[str, Any]
     supporting_details: Dict[str, Any]
@@ -192,8 +276,8 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
         "supporting_details": supporting_details,
         "data_coverage_notes": notes,
         "suggested_next_question": (
-            "Would you like the previous quarter's SQL close rate so you can compare it side by side "
-            "with this period?"
+            "Would you like a Postgres row listing for the same buyer and period? "
+            "Reply yes to list upsheets, or ask to list opportunities for the same quarter."
         ),
     }
 
@@ -205,24 +289,22 @@ def render_semantic(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dic
     best = matches[0] if matches else {}
 
     buyer_id = params.get("buyer_id")
+    input_query = handler_output.get("input_query") or ""
+    buyer_name = (best.get("buyer_name") or "").strip()
+    entity = plan.get("entity") or {}
+
+    period_phrase = period_phrase_for_report(params, plan)
+    buyer_label = buyer_label_for_report(buyer_id, buyer_name, entity)
+    subject = subject_phrase_semantic(plan, input_query)
+    request_summary = standard_report_line(buyer_label, subject, period_phrase)
+
     period_year = params.get("period_year")
     period_quarter = params.get("period_quarter")
     period_label = (
         f"Q{period_quarter} {period_year}"
         if period_year is not None and period_quarter is not None
-        else "requested period"
+        else period_phrase
     )
-    buyer_name = (best.get("buyer_name") or "").strip()
-    if buyer_name:
-        request_summary = (
-            f"Semantic performance summary for {buyer_name} in {period_label}."
-        )
-    elif buyer_id is not None:
-        request_summary = (
-            f"Semantic performance summary for Buyer {buyer_id} in {period_label}."
-        )
-    else:
-        request_summary = f"Semantic performance summary for the requested buyer in {period_label}."
 
     executive_summary = best.get("summary_snippet") or "No semantic summary found."
     best_period_label = best.get("period_label")
@@ -242,7 +324,9 @@ def render_semantic(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dic
     # Deterministic, non-numeric narrative paraphrase:
     # trend_narrative should not be identical to executive_summary.
     # We keep it grounded by referencing the retrieved snippet verbatim.
-    trend_narrative = f"The retrieved quarterly summary for {buyer_name or ('Buyer ' + str(buyer_id) if buyer_id is not None else 'the requested buyer')} in {period_label} indicates: {executive_summary}"
+    trend_narrative = (
+        f"The retrieved quarterly summary for {buyer_label} in {period_label} indicates: {executive_summary}"
+    )
 
     # Safe MVP: semantic handler currently provides only a summary snippet,
     # so we do not fabricate driver-level bullet points.
@@ -257,8 +341,14 @@ def render_semantic(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dic
         "trend_narrative": trend_narrative,
         "key_drivers": key_drivers,
         "highlights": highlights,
-        "confidence_note": "Narrative is based on semantic retrieval over precomputed quarterly KPI summaries.",
-        "suggested_next_question": "Would you like exact KPI values from direct SQL for this same period?",
+        "confidence_note": (
+            "Performance and KPI narrative here comes from semantic retrieval (precomputed quarterly summaries). "
+            "The SQL / precise toggle is for raw Postgres row listings (upsheets, opportunities), not this summary."
+        ),
+        "suggested_next_question": (
+            "Would you like a Postgres row listing for the same buyer and period? "
+            "Reply yes to list upsheets, or ask to list opportunities for the same quarter."
+        ),
     }
 
 
@@ -275,13 +365,14 @@ def render_from_combined_payload(combined: Dict[str, Any]) -> Dict[str, Any]:
         plan = combined.get("execution_plan", {}) or {}
         final_response = {
             "mode": "force_precise_unavailable",
-            "request_summary": "SQL / precise data cannot run for this question.",
+            "request_summary": "Use SQL / precise is not available for this question.",
             "executive_summary": blocked.strip(),
             "trend_narrative": "",
             "highlights": [],
             "suggested_next_question": (
-                "Turn off Use SQL / precise data for semantic search, or rephrase with "
-                "Buyer N and a quarter or date range."
+                "Turn off Use SQL / precise data to get KPI or performance answers (semantic). "
+                "With the toggle on, ask for raw rows, e.g. 'List upsheets for Buyer N in Q1 2026' "
+                "or 'List opportunities for Buyer N in Q1 2026'."
             ),
         }
         return {

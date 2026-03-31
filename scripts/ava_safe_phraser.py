@@ -90,7 +90,15 @@ def safe_ws_phrase(
     )
     message = build_mode_aware_ws_message(final_response)
 
-    receive_timeout_sec = float(os.environ.get("AVA_WS_RECEIVE_TIMEOUT_SEC", "60"))
+    # Hard cap to prevent long UI stalls. If Ava is slow, upstream code will fall back to deterministic.
+    total_timeout_sec = float(os.environ.get("AVA_WS_TOTAL_TIMEOUT_SEC", "20"))
+    # Backward-compat: if AVA_WS_RECEIVE_TIMEOUT_SEC is set, treat it as total timeout.
+    if os.environ.get("AVA_WS_RECEIVE_TIMEOUT_SEC") is not None:
+        try:
+            total_timeout_sec = float(os.environ.get("AVA_WS_RECEIVE_TIMEOUT_SEC", "20"))
+        except Exception:
+            total_timeout_sec = float(os.environ.get("AVA_WS_TOTAL_TIMEOUT_SEC", "20"))
+    socket_timeout_sec = float(os.environ.get("AVA_WS_SOCKET_TIMEOUT_SEC", "10"))
     idle_timeout_sec = float(os.environ.get("AVA_WS_IDLE_TIMEOUT_SEC", "4"))
     try:
         full_text, _frames = stream_chat_text(
@@ -98,7 +106,8 @@ def safe_ws_phrase(
             user_id=user_id,
             session_id=session_id,
             message=message,
-            receive_timeout_sec=receive_timeout_sec,
+            total_timeout_sec=total_timeout_sec,
+            socket_timeout_sec=socket_timeout_sec,
             max_idle_sec=idle_timeout_sec,
         )
     except Exception as first_exc:
@@ -115,7 +124,8 @@ def safe_ws_phrase(
                 user_id=user_id,
                 session_id=session_id,
                 message=message,
-                receive_timeout_sec=receive_timeout_sec,
+                total_timeout_sec=total_timeout_sec,
+                socket_timeout_sec=socket_timeout_sec,
                 max_idle_sec=idle_timeout_sec,
             )
         except Exception as retry_exc:

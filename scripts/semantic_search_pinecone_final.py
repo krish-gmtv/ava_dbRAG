@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 
+from intent_router_v1 import (
+    infer_quarter_from_date_range,
+    parse_between_dates,
+)
+
 try:
     from pinecone import Pinecone
 except ImportError:  # pragma: no cover
@@ -152,6 +157,16 @@ def parse_buyer_and_period(query: str) -> Tuple[Optional[int], Optional[int], Op
             except ValueError:
                 period_year = None
 
+    # Date range -> quarter when contained in a single quarter (e.g. Jan–Mar 2018 -> Q1 2018)
+    if period_quarter is None:
+        sd, ed, _ = parse_between_dates(query)
+        if sd and ed:
+            py, pq = infer_quarter_from_date_range(sd, ed)
+            if py is not None:
+                period_year = py
+            if pq is not None:
+                period_quarter = pq
+
     return buyer_id, period_year, period_quarter
 
 
@@ -201,18 +216,15 @@ def build_policy_sequence(
         fallback1 = {"buyer_id": buyer_id, "period_year": period_year}
         policies.append({"filter": fallback1, "top_k": 4})
 
-        # Fallback 2: buyer only
-        fallback2 = {"buyer_id": buyer_id}
-        policies.append({"filter": fallback2, "top_k": 4})
+        # Do not fall back to buyer-only: that ignores the requested quarter and can
+        # return an unrelated period (wrong year in the UI).
 
     elif case == "buyer_year":
         # Primary: buyer + year
         primary_filter = {"buyer_id": buyer_id, "period_year": period_year}
-        policies.append({"filter": primary_filter, "top_k": 4})
+        policies.append({"filter": primary_filter, "top_k": 8})
 
-        # Fallback: buyer only
-        fallback = {"buyer_id": buyer_id}
-        policies.append({"filter": fallback, "top_k": 4})
+        # No buyer-only fallback — empty matches are better than the wrong calendar year.
 
     elif case == "buyer_only":
         # Just buyer across all quarters/years
@@ -289,6 +301,10 @@ def main() -> None:
     index = ensure_index(pc_cfg)
 
     buyer_id, period_year, period_quarter = parse_buyer_and_period(q)
+    if args.period_year is not None:
+        period_year = args.period_year
+    if args.period_quarter is not None:
+        period_quarter = args.period_quarter
     case = classify_case(buyer_id, period_year, period_quarter)
     policy_seq = build_policy_sequence(case, buyer_id, period_year, period_quarter, args.top_k)
 

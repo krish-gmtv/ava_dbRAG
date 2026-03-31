@@ -22,7 +22,8 @@ class ResolveForcePreciseTests(unittest.TestCase):
         h, err = eq.resolve_force_precise_handler(plan)
         self.assertIsNone(h)
         self.assertIsNotNone(err)
-        self.assertIn("direct table", err.lower())
+        self.assertIn("listings", err.lower())
+        self.assertIn("upsheets", err.lower())
 
     def test_semantic_performance_does_not_map_to_kpi_sql(self) -> None:
         plan = {
@@ -56,7 +57,7 @@ class ResolveForcePreciseTests(unittest.TestCase):
         h, err = eq.resolve_force_precise_handler(plan, planner_v2_enabled=False)
         self.assertIsNone(h)
         self.assertIsNotNone(err)
-        self.assertIn("precise SQL path", err)
+        self.assertIn("opportunities", err.lower())
 
     def test_semantic_opportunities_maps_when_planner_v2_on(self) -> None:
         plan = {

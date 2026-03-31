@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, TypedDict
 
+from intent_router_v1 import period_from_execution_plan
+
 
 class PreciseTemplateEntry(TypedDict):
     handler: str
@@ -147,6 +149,20 @@ def precise_cli_args_from_plan(handler: str, plan: Dict[str, Any]) -> List[str]:
             r"\d{4}-\d{2}-\d{2}", end
         ):
             args.extend(["--start-date", start, "--end-date", end])
+    return args
+
+
+def semantic_cli_args_from_plan(plan: Dict[str, Any]) -> List[str]:
+    """
+    Pass router-normalized calendar period into semantic_search_pinecone_final.py so
+    Pinecone filters match explicit quarters / years / inferred quarters from date ranges.
+    """
+    py, pq = period_from_execution_plan(plan)
+    args: List[str] = []
+    if py is not None:
+        args.extend(["--period-year", str(py)])
+    if pq is not None:
+        args.extend(["--period-quarter", str(pq)])
     return args
 
 

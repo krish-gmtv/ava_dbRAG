@@ -31,6 +31,22 @@ class KpiAndPerformanceSemanticTests(unittest.TestCase):
         )
 
 
+class PeriodFromExecutionPlanTests(unittest.TestCase):
+    def test_range_maps_to_quarter(self) -> None:
+        plan = ir.build_execution_plan(
+            "What was Buyer 1 close rate between 2018-01-01 and 2018-03-31?"
+        )
+        y, q = ir.period_from_execution_plan(plan)
+        self.assertEqual(y, 2018)
+        self.assertEqual(q, 1)
+
+    def test_year_only_has_no_quarter(self) -> None:
+        plan = ir.build_execution_plan("How did Buyer 2 perform in 2019")
+        y, q = ir.period_from_execution_plan(plan)
+        self.assertEqual(y, 2019)
+        self.assertIsNone(q)
+
+
 class NormalizeCloseRateTests(unittest.TestCase):
     def test_zero_opportunities_sets_close_rate_zero(self) -> None:
         from precise_get_buyer_quarter_kpis import _normalize_close_rate_when_no_opportunities

@@ -102,14 +102,20 @@ def stream_chat_text(
     user_id: str,
     session_id: str,
     message: str,
-    receive_timeout_sec: float,
+    total_timeout_sec: float,
+    socket_timeout_sec: float = 10.0,
     max_idle_sec: float = 10.0,
 ) -> Tuple[str, List[str]]:
     if websocket is None:
         raise RuntimeError("Missing dependency websocket-client. Install with: pip install websocket-client")
 
     ws_url = WS_URL_TEMPLATE.format(token=token)
-    ws = websocket.create_connection(ws_url, timeout=receive_timeout_sec)
+    ws = websocket.create_connection(ws_url, timeout=socket_timeout_sec)
+    try:
+        # Ensure recv respects a smaller per-socket timeout while we enforce total_timeout_sec in-loop.
+        ws.settimeout(socket_timeout_sec)
+    except Exception:
+        pass
 
     try:
         payload = {"user_id": user_id, "session_id": session_id, "message": message}
@@ -125,7 +131,7 @@ def stream_chat_text(
         while True:
             elapsed = time.time() - start
             idle = time.time() - last_frame_at
-            if elapsed > receive_timeout_sec or idle > max_idle_sec:
+            if elapsed > total_timeout_sec or idle > max_idle_sec:
                 break
 
             try:
