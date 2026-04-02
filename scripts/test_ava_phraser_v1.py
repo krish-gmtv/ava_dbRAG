@@ -38,7 +38,17 @@ def assert_has_keys(obj: Dict[str, Any], keys: List[str], context: str) -> None:
 
 
 def validate_phraser_payload(payload: Dict[str, Any]) -> Tuple[bool, str]:
-    assert_has_keys(payload, ["execution_plan", "selected_handler", "final_response", "phrasing"], "top-level")
+    assert_has_keys(
+        payload,
+        [
+            "execution_plan",
+            "selected_handler",
+            "final_response",
+            "structured_report",
+            "phrasing",
+        ],
+        "top-level",
+    )
 
     final_response = payload.get("final_response", {}) or {}
     phrasing = payload.get("phrasing", {}) or {}
@@ -111,10 +121,14 @@ def build_test_input_json(path: Path, mode: str = "semantic") -> None:
                 "request_summary": "Buyer 1 performance summary for Q1 2018.",
                 "executive_summary": "Buyer1 User1 recorded low workload in 2018 Q1.",
                 "trend_narrative": "The retrieved quarterly summary for Buyer 1 in Q1 2018 indicates: Buyer1 User1 recorded low workload in 2018 Q1.",
-                "key_drivers": [
-                    "Driver-level details are not included in this semantic result (summary snippet only)."
-                ],
+                "key_drivers": [],
                 "highlights": ["Top matched document: Buyer1 User1 - Q1 2018."],
+                "semantic_quality": {
+                    "confidence_level": "high",
+                    "render_mode": "full_semantic",
+                    "reasons": [],
+                    "metadata_aligned": True,
+                },
                 "confidence_note": (
                     "Performance and KPI narrative here comes from semantic retrieval (precomputed quarterly summaries). "
                     "The SQL / precise toggle is for raw Postgres row listings (upsheets, opportunities), not this summary."

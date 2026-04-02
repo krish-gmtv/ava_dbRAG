@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from validate_ava_output_v1 import validate_ava_output
 from ava_safe_phraser import safe_ws_phrase
+from structured_report_v1 import build_structured_report
 
 
 load_dotenv()
@@ -71,8 +72,17 @@ def deterministic_phrase(final_response: Dict[str, Any]) -> str:
     next_q = final_response.get("suggested_next_question", "")
 
     lines = [request_summary, "", executive_summary]
+    rs = (final_response.get("retrieval_status") or "").strip()
+    if rs:
+        lines.extend(["", rs])
     if trend_narrative and trend_narrative != executive_summary:
         lines.extend(["", trend_narrative])
+    kd = final_response.get("key_drivers") or []
+    if kd:
+        lines.append("")
+        lines.append("Key drivers:")
+        for item in kd:
+            lines.append(f"- {item}")
     if highlights:
         lines.append("")
         lines.append("Highlights:")
@@ -234,6 +244,7 @@ def main() -> None:
         "execution_plan": rendered.get("execution_plan"),
         "selected_handler": rendered.get("selected_handler"),
         "final_response": final_response,
+        "structured_report": build_structured_report(final_response),
         "phrasing": {
             "mode": phrasing_mode,
             "text": phrased_text,

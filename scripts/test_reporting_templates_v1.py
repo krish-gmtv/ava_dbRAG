@@ -39,7 +39,17 @@ class ReportingTemplateTests(unittest.TestCase):
         ho = {
             "params": {"buyer_id": 1, "period_year": 2018, "period_quarter": 1},
             "input_query": "What was Buyer 1 close rate in Q1 2018?",
-            "result": {"matches": [{"buyer_name": "Acme", "summary_snippet": "ok"}]},
+            "result": {
+                "matches": [
+                    {
+                        "buyer_id": 1,
+                        "buyer_name": "Acme",
+                        "period_label": "Q1 2018",
+                        "summary_snippet": "ok",
+                        "score": 0.82,
+                    }
+                ]
+            },
         }
         self.assertEqual(
             ar.render_semantic(plan, ho)["request_summary"],
@@ -56,7 +66,17 @@ class ReportingTemplateTests(unittest.TestCase):
         ho = {
             "params": {"buyer_id": 7, "period_year": 2018, "period_quarter": 1},
             "input_query": "How did Buyer 7 perform in Q1 2018?",
-            "result": {"matches": [{"buyer_name": "Co", "summary_snippet": "x"}]},
+            "result": {
+                "matches": [
+                    {
+                        "buyer_id": 7,
+                        "buyer_name": "Co",
+                        "period_label": "Q1 2018",
+                        "summary_snippet": "Strong quarter.",
+                        "score": 0.79,
+                    }
+                ]
+            },
         }
         self.assertEqual(
             ar.render_semantic(plan, ho)["request_summary"],

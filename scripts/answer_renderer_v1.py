@@ -8,9 +8,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from intent_router_v1 import period_from_execution_plan
+from semantic_quality_v1 import evaluate_semantic_quality
 
 
 logger = logging.getLogger(__name__)
+
+
+def _honest_no_semantic_summary(buyer_label: str, period_label: str) -> str:
+    return (
+        f"I couldn't find a reliable precomputed quarterly summary for {buyer_label} "
+        f"in {period_label}. Try another quarter or year, or use the SQL / precise toggle "
+        f"for Postgres row listings (upsheets or opportunities)."
+    )
+
+
+_RETRIEVAL_WEAK_STATUS = (
+    "Semantic retrieval for this buyer and period is limited: match quality or metadata "
+    "alignment did not meet the stronger evidence bar."
+)
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
@@ -306,49 +321,99 @@ def render_semantic(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dic
         else period_phrase
     )
 
-    executive_summary = best.get("summary_snippet") or "No semantic summary found."
+    quality = evaluate_semantic_quality(plan, handler_output)
+    semantic_quality_payload = {
+        "confidence_level": quality.confidence_level,
+        "render_mode": quality.render_mode,
+        "reasons": quality.reasons,
+        "metadata_aligned": quality.metadata_aligned,
+    }
+
+    next_q = (
+        "Would you like a Postgres row listing for the same buyer and period? "
+        "Reply yes to list upsheets, or ask to list opportunities for the same quarter."
+    )
+    base_response: Dict[str, Any] = {
+        "mode": "semantic",
+        "request_summary": request_summary,
+        "suggested_next_question": next_q,
+        "semantic_quality": semantic_quality_payload,
+    }
+
+    raw_snippet = (best.get("summary_snippet") or "").strip()
     best_period_label = best.get("period_label")
     score = best.get("score")
 
-    highlights: List[str] = []
-    if buyer_name and best_period_label:
-        highlights.append(
-            f"Top matched document: {buyer_name} - {best_period_label}."
-        )
-    if score is not None:
-        try:
-            highlights.append(f"Top similarity score: {float(score):.4f}.")
-        except (TypeError, ValueError):
-            pass
+    def _score_highlights() -> List[str]:
+        hl: List[str] = []
+        if buyer_name and best_period_label:
+            hl.append(f"Top matched document: {buyer_name} - {best_period_label}.")
+        if score is not None:
+            try:
+                hl.append(f"Top similarity score: {float(score):.4f}.")
+            except (TypeError, ValueError):
+                pass
+        return hl
 
-    # Deterministic, non-numeric narrative paraphrase:
-    # trend_narrative should not be identical to executive_summary.
-    # We keep it grounded by referencing the retrieved snippet verbatim.
-    trend_narrative = (
-        f"The retrieved quarterly summary for {buyer_label} in {period_label} indicates: {executive_summary}"
+    strong_confidence_note = (
+        "Performance and KPI narrative here comes from semantic retrieval (precomputed quarterly summaries). "
+        "The SQL / precise toggle is for raw Postgres row listings (upsheets, opportunities), not this summary."
+    )
+    weak_confidence_note = (
+        "Semantic retrieval produced limited evidence for this answer. "
+        "The SQL / precise toggle is for raw Postgres row listings (upsheets, opportunities)."
+    )
+    none_confidence_note = (
+        "No precomputed quarterly summary passed quality checks for this request. "
+        "Use SQL / precise for raw row listings when appropriate."
     )
 
-    # Safe MVP: semantic handler currently provides only a summary snippet,
-    # so we do not fabricate driver-level bullet points.
-    key_drivers: List[str] = [
-        "Driver-level details are not included in this semantic result (summary snippet only)."
-    ]
+    if quality.render_mode == "no_semantic_summary":
+        return {
+            **base_response,
+            "executive_summary": _honest_no_semantic_summary(buyer_label, period_label),
+            "trend_narrative": "",
+            "key_drivers": [],
+            "highlights": [],
+            "retrieval_status": (
+                "No reliable semantic summary was retrieved at the current quality thresholds."
+            ),
+            "available_evidence": [],
+            "confidence_note": none_confidence_note,
+        }
+
+    if quality.render_mode == "weak_semantic":
+        highlights_w = _score_highlights()
+        if raw_snippet and raw_snippet.lower() != "no semantic summary found.":
+            executive = f"{_RETRIEVAL_WEAK_STATUS} Retrieved excerpt: {raw_snippet}"
+        else:
+            executive = (
+                f"{_RETRIEVAL_WEAK_STATUS} No summary text was available on the top vector match."
+            )
+        return {
+            **base_response,
+            "executive_summary": executive,
+            "trend_narrative": "",
+            "key_drivers": [],
+            "highlights": highlights_w,
+            "available_evidence": list(highlights_w),
+            "confidence_note": weak_confidence_note,
+        }
+
+    executive_summary = raw_snippet
+    highlights_f = _score_highlights()
+    trend_narrative = (
+        f"The retrieved quarterly summary for {buyer_label} in {period_label} indicates: "
+        f"{executive_summary}"
+    )
 
     return {
-        "mode": "semantic",
-        "request_summary": request_summary,
+        **base_response,
         "executive_summary": executive_summary,
         "trend_narrative": trend_narrative,
-        "key_drivers": key_drivers,
-        "highlights": highlights,
-        "confidence_note": (
-            "Performance and KPI narrative here comes from semantic retrieval (precomputed quarterly summaries). "
-            "The SQL / precise toggle is for raw Postgres row listings (upsheets, opportunities), not this summary."
-        ),
-        "suggested_next_question": (
-            "Would you like a Postgres row listing for the same buyer and period? "
-            "Reply yes to list upsheets, or ask to list opportunities for the same quarter."
-        ),
+        "key_drivers": [],
+        "highlights": highlights_f,
+        "confidence_note": strong_confidence_note,
     }
 
 

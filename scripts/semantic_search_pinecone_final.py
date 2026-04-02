@@ -1,6 +1,8 @@
 import argparse
+import itertools
 import json
 import logging
+import numbers
 import os
 import re
 from dataclasses import dataclass
@@ -197,6 +199,8 @@ def build_policy_sequence(
     period_year: Optional[int],
     period_quarter: Optional[int],
     cli_top_k: int,
+    *,
+    allow_buyer_only_fallback: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Build a sequence of {filter, top_k} according to v1 policy.
@@ -216,15 +220,28 @@ def build_policy_sequence(
         fallback1 = {"buyer_id": buyer_id, "period_year": period_year}
         policies.append({"filter": fallback1, "top_k": 4})
 
-        # Do not fall back to buyer-only: that ignores the requested quarter and can
-        # return an unrelated period (wrong year in the UI).
+        if allow_buyer_only_fallback and buyer_id is not None:
+            policies.append(
+                {
+                    "filter": {"buyer_id": buyer_id},
+                    "top_k": 8,
+                    "_fallback": "buyer_only",
+                }
+            )
 
     elif case == "buyer_year":
         # Primary: buyer + year
         primary_filter = {"buyer_id": buyer_id, "period_year": period_year}
         policies.append({"filter": primary_filter, "top_k": 8})
 
-        # No buyer-only fallback — empty matches are better than the wrong calendar year.
+        if allow_buyer_only_fallback and buyer_id is not None:
+            policies.append(
+                {
+                    "filter": {"buyer_id": buyer_id},
+                    "top_k": 8,
+                    "_fallback": "buyer_only",
+                }
+            )
 
     elif case == "buyer_only":
         # Just buyer across all quarters/years
@@ -236,6 +253,49 @@ def build_policy_sequence(
         policies.append({"filter": None, "top_k": cli_top_k})
 
     return policies
+
+
+def env_flag(name: str, default: bool = True) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def metadata_filter_variants(flt: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Pinecone metadata often stores buyer_id / period_* as strings while the router
+    passes ints. Try both so typed filters are not silently empty.
+    """
+    typed_keys = ("buyer_id", "period_year", "period_quarter")
+    variant_dims: List[List[Tuple[str, Any]]] = []
+    base: Dict[str, Any] = {}
+    for k, v in flt.items():
+        if (
+            k in typed_keys
+            and isinstance(v, numbers.Integral)
+            and not isinstance(v, bool)
+        ):
+            variant_dims.append([(k, int(v)), (k, str(int(v)))])
+        else:
+            base[k] = v
+    if not variant_dims:
+        return [{**flt}]
+    branches: List[Dict[str, Any]] = []
+    for combo in itertools.product(*variant_dims):
+        d = dict(base)
+        for key, val in combo:
+            d[key] = val
+        branches.append(d)
+    seen: set = set()
+    uniq: List[Dict[str, Any]] = []
+    for d in branches:
+        # repr preserves int vs str (str("2") must not collapse with int 2).
+        sig = tuple(sorted((k, repr(v)) for k, v in d.items()))
+        if sig not in seen:
+            seen.add(sig)
+            uniq.append(d)
+    return uniq
 
 
 def short_snippet(metadata: Dict[str, Any], max_len: int = 200) -> str:
@@ -290,6 +350,18 @@ def main() -> None:
         default="",
         help="Optional Pinecone namespace (leave blank for default).",
     )
+    parser.add_argument(
+        "--period-year",
+        type=int,
+        default=None,
+        help="Override parsed period year (from router execution plan).",
+    )
+    parser.add_argument(
+        "--period-quarter",
+        type=int,
+        default=None,
+        help="Override parsed period quarter 1-4 (from router execution plan).",
+    )
 
     args = parser.parse_args()
     q = args.query.strip()
@@ -306,7 +378,15 @@ def main() -> None:
     if args.period_quarter is not None:
         period_quarter = args.period_quarter
     case = classify_case(buyer_id, period_year, period_quarter)
-    policy_seq = build_policy_sequence(case, buyer_id, period_year, period_quarter, args.top_k)
+    allow_buyer_fb = env_flag("SEMANTIC_BUYER_ONLY_FALLBACK", default=True)
+    policy_seq = build_policy_sequence(
+        case,
+        buyer_id,
+        period_year,
+        period_quarter,
+        args.top_k,
+        allow_buyer_only_fallback=allow_buyer_fb,
+    )
 
     logger.info(
         "Embedding query with Ava (type=RETRIEVAL_QUERY), Pinecone index=%s, env=%s",
@@ -329,19 +409,24 @@ def main() -> None:
         flt = policy["filter"]
         top_k = policy["top_k"]
 
-        res = index.query(
-            vector=query_vec,
-            top_k=top_k,
-            include_metadata=True,
-            include_values=False,
-            filter=flt or None,
-            namespace=args.namespace or None,
+        filter_attempts: List[Optional[Dict[str, Any]]] = (
+            [None] if flt is None else metadata_filter_variants(flt)
         )
-
-        matches = getattr(res, "matches", None) or []
-        if matches:
-            all_matches = matches
-            used_policy = policy
+        for concrete_flt in filter_attempts:
+            res = index.query(
+                vector=query_vec,
+                top_k=top_k,
+                include_metadata=True,
+                include_values=False,
+                filter=concrete_flt,
+                namespace=args.namespace or None,
+            )
+            matches = getattr(res, "matches", None) or []
+            if matches:
+                all_matches = matches
+                used_policy = policy
+                break
+        if all_matches:
             break
 
     payload: Dict[str, Any] = {
@@ -363,6 +448,7 @@ def main() -> None:
             "index_name": pc_cfg.index_name,
             "policy_filter_used": (used_policy or {}).get("filter"),
             "top_k_used": (used_policy or {}).get("top_k", args.top_k),
+            "retrieval_fallback": (used_policy or {}).get("_fallback"),
         },
     }
 

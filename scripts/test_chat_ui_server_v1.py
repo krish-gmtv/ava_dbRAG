@@ -12,6 +12,30 @@ class ChatUiServerFollowupTests(unittest.TestCase):
     def setUp(self) -> None:
         server.THREAD_CONTEXT.clear()
 
+    def test_attach_structured_payload_from_final_response(self) -> None:
+        resp = {
+            "display_text": "x",
+            "source_mode": "semantic",
+            "raw": {
+                "final_response": {
+                    "mode": "semantic",
+                    "request_summary": "R1",
+                    "executive_summary": "E1",
+                    "trend_narrative": "T1",
+                    "highlights": [],
+                    "suggested_next_question": "N1",
+                }
+            },
+        }
+        server.attach_structured_payload(resp, developer_mode=False)
+        self.assertEqual(resp["structured_report"]["report_kind"], "semantic")
+        self.assertEqual(resp["structured_report"]["sections"]["request_summary"], "R1")
+        self.assertNotIn("developer", resp)
+
+        server.attach_structured_payload(resp, developer_mode=True)
+        self.assertIn("developer", resp)
+        self.assertEqual(resp["developer"]["final_response_mode"], "semantic")
+
     def test_update_thread_ctx_sets_listing_followup_from_semantic_response(self) -> None:
         payload = {
             "execution_plan": {

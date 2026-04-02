@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlparse
 
+from structured_report_v1 import (
+    build_developer_diagnostics,
+    build_structured_report,
+    build_structured_report_from_ui_fallback,
+)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT_DIR / "scripts"
@@ -38,6 +43,23 @@ DOMAIN_KEYWORDS = (
 )
 GREETING_WORDS = ("hello", "hi", "hey", "good morning", "good afternoon", "good evening")
 AFFIRM_WORDS = {"yes", "yeah", "yep", "sure", "ok", "okay", "do it", "go ahead"}
+
+
+def attach_structured_payload(resp: Dict[str, Any], developer_mode: bool) -> None:
+    raw = resp.get("raw")
+    if isinstance(raw, dict) and isinstance(raw.get("final_response"), dict):
+        resp["structured_report"] = build_structured_report(raw["final_response"])
+    else:
+        resp["structured_report"] = build_structured_report_from_ui_fallback(
+            display_text=str(resp.get("display_text") or ""),
+            source_mode=str(resp.get("source_mode") or ""),
+        )
+    if developer_mode:
+        resp["developer"] = build_developer_diagnostics(
+            raw if isinstance(raw, dict) else {}
+        )
+    else:
+        resp.pop("developer", None)
 
 
 def run_pipeline(
@@ -552,6 +574,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         use_ava = bool(payload.get("use_ava", False))
         strict_validation = bool(payload.get("strict_validation", False))
         force_precise = bool(payload.get("force_precise", False))
+        developer_mode = bool(payload.get("developer_mode", False))
         thread_id = str(payload.get("thread_id") or "").strip()
         app_user_id = str(payload.get("app_user_id") or "").strip()
         thread_ctx = get_thread_ctx(thread_id)
@@ -559,14 +582,13 @@ class ChatHandler(BaseHTTPRequestHandler):
         # Follow-through behavior: if the previous response suggested a next step and user affirms,
         # execute that recommendation for the same buyer/period.
         if is_gratitude(query):
-            self._send_json(
-                HTTPStatus.OK,
-                gratitude_response(
-                    query=query,
-                    thread_id=thread_id,
-                    app_user_id=app_user_id,
-                ),
+            g = gratitude_response(
+                query=query,
+                thread_id=thread_id,
+                app_user_id=app_user_id,
             )
+            attach_structured_payload(g, developer_mode)
+            self._send_json(HTTPStatus.OK, g)
             return
 
         rewritten_query = query
@@ -588,15 +610,14 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         if should_guardrail_query(rewritten_query):
             mode = "greeting" if is_greeting(query) else "offtopic"
-            self._send_json(
-                HTTPStatus.OK,
-                guardrail_response(
-                    query=query,
-                    thread_id=thread_id,
-                    app_user_id=app_user_id,
-                    mode=mode,
-                ),
+            gr = guardrail_response(
+                query=query,
+                thread_id=thread_id,
+                app_user_id=app_user_id,
+                mode=mode,
             )
+            attach_structured_payload(gr, developer_mode)
+            self._send_json(HTTPStatus.OK, gr)
             return
 
         try:
@@ -617,14 +638,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                 err_text,
                 flags=re.IGNORECASE,
             ):
-                self._send_json(
-                    HTTPStatus.OK,
-                    temporary_service_fallback_response(
-                        query=query,
-                        thread_id=thread_id,
-                        app_user_id=app_user_id,
-                    ),
+                fb = temporary_service_fallback_response(
+                    query=query,
+                    thread_id=thread_id,
+                    app_user_id=app_user_id,
                 )
+                attach_structured_payload(fb, developer_mode)
+                self._send_json(HTTPStatus.OK, fb)
                 return
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -662,6 +682,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             "force_precise": force_precise,
             "raw": pipeline_output,
         }
+        attach_structured_payload(response, developer_mode)
         self._send_json(HTTPStatus.OK, response)
 
 

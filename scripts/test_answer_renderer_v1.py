@@ -75,6 +75,7 @@ def validate_semantic(final_response: Dict[str, Any]) -> None:
             "highlights",
             "confidence_note",
             "suggested_next_question",
+            "semantic_quality",
         },
         context="semantic final_response",
     )
@@ -86,6 +87,8 @@ def validate_semantic(final_response: Dict[str, Any]) -> None:
         raise AssertionError("semantic final_response.executive_summary must be a string.")
     if not isinstance(final_response["trend_narrative"], str):
         raise AssertionError("semantic final_response.trend_narrative must be a string.")
+    if not isinstance(final_response.get("semantic_quality"), dict):
+        raise AssertionError("semantic final_response.semantic_quality must be a dict.")
 
 
 def validate_precise(
