@@ -1,0 +1,92 @@
+"""
+Template-driven report **planning** (v1).
+
+Produces a deterministic JSON plan: template, slots, section order, and which data blocks
+are intended to run. The next milestone wires this plan to ``execute_query_v1`` /
+``answer_renderer_v1`` so each block fills the right section.
+
+Flow (target end state):
+  user query → match template → fill slots → execute allowed blocks in template order
+  → merge into template section layout → Ava phrases inside sections only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import asdict
+from typing import Any, Dict, List, Optional
+
+from saved_report_templates_v1 import get_template
+from template_matcher_v1 import (
+    explicit_listing_requested,
+    extract_template_slots,
+    match_saved_report_template,
+    missing_required_slots,
+)
+
+
+def _blocks_to_run(
+    template_id: str,
+    *,
+    user_query: str,
+) -> List[Dict[str, Any]]:
+    tpl = get_template(template_id)
+    q = user_query or ""
+    want_listing = explicit_listing_requested(q)
+    out: List[Dict[str, Any]] = []
+    for block in tpl.data_blocks:
+        if block.requires_explicit_user_request:
+            status = "selected" if want_listing else "skipped_not_requested"
+        elif block.block_id in tpl.disallowed_without_explicit_request:
+            status = "skipped"
+        else:
+            status = "selected"
+        row = {"status": status, **asdict(block)}
+        out.append(row)
+    return out
+
+
+def plan_saved_report(user_query: str) -> Optional[Dict[str, Any]]:
+    """
+    If the query matches a saved template, return a structured plan (no I/O).
+    Otherwise return None so the caller can fall back to legacy query-driven routing.
+    """
+    q = (user_query or "").strip()
+    if not q:
+        return None
+    tid = match_saved_report_template(q)
+    if tid is None:
+        return None
+    tpl = get_template(tid)
+    slots = extract_template_slots(q, tpl)
+    missing = missing_required_slots(tpl, slots)
+    return {
+        "kind": "saved_report_plan_v1",
+        "template_id": tid,
+        "display_name": tpl.display_name,
+        "purpose": tpl.purpose,
+        "slots": slots,
+        "missing_required_slots": missing,
+        "section_order": list(tpl.section_order),
+        "phrasing_rules": list(tpl.phrasing_rules),
+        "data_blocks": _blocks_to_run(tid, user_query=q),
+        "ready_to_execute": len(missing) == 0,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Print a saved-report plan JSON for a user query (v1, planning only)."
+    )
+    parser.add_argument("--query", type=str, required=True)
+    args = parser.parse_args()
+    plan = plan_saved_report(args.query.strip())
+    if plan is None:
+        print(json.dumps({"kind": "no_saved_template_match", "query": args.query.strip()}))
+        return
+    print(json.dumps(plan, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

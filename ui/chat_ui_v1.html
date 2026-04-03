@@ -82,6 +82,74 @@
       opacity: 0.7;
       cursor: not-allowed;
     }
+    .report-panel {
+      text-align: left;
+      white-space: normal;
+    }
+    .report-panel h3 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #374151;
+    }
+    .report-section {
+      margin-bottom: 14px;
+    }
+    .report-section p {
+      margin: 0;
+      line-height: 1.45;
+    }
+    table.kpi-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    table.kpi-table th,
+    table.kpi-table td {
+      border: 1px solid #e5e7eb;
+      padding: 8px 10px;
+      text-align: left;
+    }
+    table.kpi-table th {
+      background: #f3f4f6;
+      font-weight: 600;
+    }
+    ul.report-list {
+      margin: 6px 0 0 18px;
+      padding: 0;
+    }
+    .report-next {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed #d1d5db;
+      font-size: 14px;
+    }
+    .dev-diagnostics {
+      margin-top: 12px;
+      padding: 10px;
+      background: #1f2937;
+      color: #e5e7eb;
+      border-radius: 8px;
+      font-size: 12px;
+      overflow: auto;
+      max-height: 220px;
+    }
+    .dev-diagnostics h4 {
+      margin: 0 0 8px 0;
+      font-size: 12px;
+      color: #93c5fd;
+    }
+    .dev-diagnostics pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .phrasing-fallback-note {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #92400e;
+    }
   </style>
 </head>
 <body>
@@ -98,9 +166,10 @@
       </div>
       <div class="row">
         <label><input id="forcePrecise" type="checkbox" /> Use SQL / precise data</label>
+        <label><input id="developerMode" type="checkbox" /> Developer mode (execution plan, handler, validation)</label>
       </div>
       <div class="meta">
-        Ava phrasing is off by default. SQL / precise data forces direct Postgres when a SQL path exists for your query; it does not change wording rules (use Strict validation for that).
+        Ava phrasing is off by default. SQL / precise data runs direct Postgres row listings (upsheets, opportunities) when your question matches; KPI and performance summaries stay semantic. It does not change wording rules (use Strict validation for that).
       </div>
     </div>
 
@@ -126,10 +195,12 @@
     const useAvaInput = document.getElementById("useAva");
     const strictValidationInput = document.getElementById("strictValidation");
     const forcePreciseInput = document.getElementById("forcePrecise");
+    const developerModeInput = document.getElementById("developerMode");
 
     const STORAGE_THREAD_KEY = "ava_db_rag_thread_id";
     const STORAGE_USER_KEY = "ava_db_rag_app_user_id";
     const STORAGE_FORCE_PRECISE_KEY = "ava_db_rag_force_precise";
+    const STORAGE_DEVELOPER_KEY = "ava_db_rag_developer_mode";
     let isSending = false;
 
     function randomId(prefix) {
@@ -169,6 +240,154 @@
         localStorage.removeItem(STORAGE_USER_KEY);
       }
       localStorage.setItem(STORAGE_FORCE_PRECISE_KEY, forcePreciseInput.checked ? "1" : "0");
+      localStorage.setItem(STORAGE_DEVELOPER_KEY, developerModeInput.checked ? "1" : "0");
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function formatMetricKey(key) {
+      return String(key || "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function renderStructuredReport(sr, developerPayload, showDev) {
+      if (!sr || typeof sr !== "object") {
+        return "";
+      }
+      const kind = sr.report_kind;
+      const sec = sr.sections || {};
+      const parts = [];
+      parts.push('<div class="report-panel">');
+
+      if (kind === "precise") {
+        if (sec.request_summary) {
+          parts.push(`<div class="report-section"><h3>Request summary</h3><p>${escapeHtml(sec.request_summary)}</p></div>`);
+        }
+        if (Array.isArray(sec.kpi_table) && sec.kpi_table.length) {
+          parts.push('<div class="report-section"><h3>Key results</h3><table class="kpi-table"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>');
+          for (const row of sec.kpi_table) {
+            parts.push(`<tr><td>${escapeHtml(formatMetricKey(row.metric_key))}</td><td>${escapeHtml(row.value)}</td></tr>`);
+          }
+          parts.push("</tbody></table></div>");
+        }
+        if (Array.isArray(sec.notes) && sec.notes.length) {
+          parts.push('<div class="report-section"><h3>Notes</h3><ul class="report-list">');
+          for (const n of sec.notes) {
+            parts.push(`<li>${escapeHtml(n)}</li>`);
+          }
+          parts.push("</ul></div>");
+        }
+      } else if (kind === "saved_report") {
+        if (sec.request_summary) {
+          parts.push(`<div class="report-section"><h3>Request summary</h3><p>${escapeHtml(sec.request_summary)}</p></div>`);
+        }
+        if (sec.executive_summary) {
+          parts.push(`<div class="report-section"><h3>Executive summary</h3><p>${escapeHtml(sec.executive_summary)}</p></div>`);
+        }
+        if (Array.isArray(sec.kpi_table) && sec.kpi_table.length) {
+          parts.push('<div class="report-section"><h3>KPI snapshot</h3><table class="kpi-table"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>');
+          for (const row of sec.kpi_table) {
+            parts.push(`<tr><td>${escapeHtml(formatMetricKey(row.metric_key))}</td><td>${escapeHtml(row.value)}</td></tr>`);
+          }
+          parts.push("</tbody></table></div>");
+        }
+        if (Array.isArray(sec.highlights) && sec.highlights.length) {
+          parts.push('<div class="report-section"><h3>Highlights</h3><ul class="report-list">');
+          for (const h of sec.highlights) {
+            parts.push(`<li>${escapeHtml(h)}</li>`);
+          }
+          parts.push("</ul></div>");
+        }
+        if (Array.isArray(sec.notes) && sec.notes.length) {
+          parts.push('<div class="report-section"><h3>Notes</h3><ul class="report-list">');
+          for (const n of sec.notes) {
+            parts.push(`<li>${escapeHtml(n)}</li>`);
+          }
+          parts.push("</ul></div>");
+        }
+        if (sec.template_id && showDev) {
+          parts.push(`<div class="meta" style="margin-top:8px;">Template: ${escapeHtml(sec.template_id)}</div>`);
+        }
+      } else if (kind === "semantic") {
+        if (sec.request_summary) {
+          parts.push(`<div class="report-section"><h3>Request summary</h3><p>${escapeHtml(sec.request_summary)}</p></div>`);
+        }
+        if (sec.retrieval_status) {
+          parts.push(`<div class="report-section"><h3>Retrieval status</h3><p>${escapeHtml(sec.retrieval_status)}</p></div>`);
+        }
+        if (sec.executive_summary) {
+          parts.push(`<div class="report-section"><h3>Executive summary</h3><p>${escapeHtml(sec.executive_summary)}</p></div>`);
+        }
+        if (sec.trend_narrative) {
+          parts.push(`<div class="report-section"><h3>Trend narrative</h3><p>${escapeHtml(sec.trend_narrative)}</p></div>`);
+        }
+        if (Array.isArray(sec.key_drivers) && sec.key_drivers.length) {
+          parts.push('<div class="report-section"><h3>Key drivers</h3><ul class="report-list">');
+          for (const d of sec.key_drivers) {
+            parts.push(`<li>${escapeHtml(d)}</li>`);
+          }
+          parts.push("</ul></div>");
+        }
+        if (Array.isArray(sec.highlights) && sec.highlights.length) {
+          parts.push('<div class="report-section"><h3>Highlights</h3><ul class="report-list">');
+          for (const h of sec.highlights) {
+            parts.push(`<li>${escapeHtml(h)}</li>`);
+          }
+          parts.push("</ul></div>");
+        }
+        if (sec.confidence_note) {
+          parts.push(`<div class="report-section"><h3>Context</h3><p>${escapeHtml(sec.confidence_note)}</p></div>`);
+        }
+        if (Array.isArray(sec.available_evidence) && sec.available_evidence.length &&
+            (!Array.isArray(sec.highlights) || !sec.highlights.length)) {
+          parts.push('<div class="report-section"><h3>Available evidence</h3><ul class="report-list">');
+          for (const ev of sec.available_evidence) {
+            parts.push(`<li>${escapeHtml(ev)}</li>`);
+          }
+          parts.push("</ul></div>");
+        }
+      } else if (kind === "force_precise_unavailable") {
+        if (sec.request_summary) {
+          parts.push(`<div class="report-section"><h3>Request summary</h3><p>${escapeHtml(sec.request_summary)}</p></div>`);
+        }
+        if (sec.executive_summary) {
+          parts.push(`<div class="report-section"><h3>Detail</h3><p>${escapeHtml(sec.executive_summary)}</p></div>`);
+        }
+      } else if (kind === "ui_message") {
+        if (sec.message) {
+          parts.push(`<div class="report-section"><p>${escapeHtml(sec.message).replace(/\n/g, "<br/>")}</p></div>`);
+        }
+      } else {
+        if (sec.request_summary) {
+          parts.push(`<div class="report-section"><p>${escapeHtml(sec.request_summary)}</p></div>`);
+        }
+        if (sec.executive_summary) {
+          parts.push(`<div class="report-section"><p>${escapeHtml(sec.executive_summary)}</p></div>`);
+        }
+      }
+
+      const nextQ =
+        kind === "ui_message" ? "" : (sec.suggested_next_question || "");
+      if (nextQ) {
+        parts.push(`<div class="report-next"><strong>Next</strong><br/>${escapeHtml(nextQ)}</div>`);
+      }
+
+      parts.push("</div>");
+
+      if (showDev && developerPayload && typeof developerPayload === "object") {
+        parts.push('<div class="dev-diagnostics"><h4>Developer diagnostics</h4><pre>');
+        parts.push(escapeHtml(JSON.stringify(developerPayload, null, 2)));
+        parts.push("</pre></div>");
+      }
+
+      return parts.join("");
     }
 
     function appendMessage(role, text, metaText) {
@@ -185,6 +404,23 @@
       chatLog.appendChild(div);
       chatLog.scrollTop = chatLog.scrollHeight;
       return { div, textNode };
+    }
+
+    function appendBotReportHtml(html, metaText) {
+      const div = document.createElement("div");
+      div.className = "msg bot";
+      const wrap = document.createElement("div");
+      wrap.innerHTML = html || "";
+      div.appendChild(wrap);
+      if (metaText) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = metaText;
+        div.appendChild(meta);
+      }
+      chatLog.appendChild(div);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      return div;
     }
 
     function streamIntoTextNode(textNode, fullText, delayMs = 8) {
@@ -228,7 +464,8 @@
             app_user_id: appUserIdInput.value.trim(),
             use_ava: useAvaInput.checked,
             strict_validation: strictValidationInput.checked,
-            force_precise: forcePreciseInput.checked
+            force_precise: forcePreciseInput.checked,
+            developer_mode: developerModeInput.checked
           })
         });
         const data = await res.json();
@@ -239,21 +476,30 @@
           return;
         }
 
-        const parts = [
-          `source_mode=${data.source_mode}`,
-          `phrasing_mode=${data.phrasing_mode}`,
-          `force_precise=${data.force_precise ? "on" : "off"}`
-        ];
-        if (data.phrasing_mode === "deterministic_fallback") {
-          parts.push("Fallback response used");
+        loadingMsg.div.remove();
+        const showDev = developerModeInput.checked;
+        let footerMeta = "";
+        if (showDev) {
+          footerMeta = [
+            `source_mode=${data.source_mode}`,
+            `phrasing_mode=${data.phrasing_mode}`,
+            `force_precise=${data.force_precise ? "on" : "off"}`
+          ].join(" | ");
+        } else if (data.phrasing_mode === "deterministic_fallback") {
+          footerMeta = "Ava phrasing validation or transport failed; deterministic report shown.";
         }
-        const meta = parts.join(" | ");
-        const displayText = (data.display_text || "").trim() || "No response text returned.";
-        await streamIntoTextNode(loadingMsg.textNode, displayText);
-        const m = document.createElement("div");
-        m.className = "meta";
-        m.textContent = meta;
-        loadingMsg.div.appendChild(m);
+        const reportHtml = renderStructuredReport(
+          data.structured_report,
+          data.developer,
+          showDev
+        );
+        const botDiv = appendBotReportHtml(reportHtml, footerMeta);
+        if (!showDev && data.phrasing_mode === "deterministic_fallback") {
+          const note = document.createElement("div");
+          note.className = "phrasing-fallback-note";
+          note.textContent = "The structured report reflects backend fields; Ava did not rewrite this reply.";
+          botDiv.appendChild(note);
+        }
       } catch (err) {
         loadingMsg.textNode.nodeValue = `Error: ${String(err)}`;
       } finally {
@@ -275,6 +521,7 @@
     threadIdInput.addEventListener("change", persistIdentityFields);
     appUserIdInput.addEventListener("change", persistIdentityFields);
     forcePreciseInput.addEventListener("change", persistIdentityFields);
+    developerModeInput.addEventListener("change", persistIdentityFields);
 
     initIdentityFields();
     sendBtn.addEventListener("click", sendQuery);

@@ -44,6 +44,35 @@ def deterministic_phrase(final_response: Dict[str, Any]) -> str:
             lines.extend(["", f"Next: {next_q}"])
         return "\n".join(lines).strip()
 
+    if mode == "saved_report":
+        request_summary = final_response.get("request_summary", "")
+        executive_summary = final_response.get("executive_summary", "")
+        kpi_snapshot = final_response.get("kpi_snapshot") or {}
+        highlights = final_response.get("highlights") or []
+        notes = final_response.get("notes") or []
+        next_q = final_response.get("suggested_next_question", "")
+        lines = [request_summary, "", "Executive summary", executive_summary]
+        lines.extend(["", "KPI snapshot"])
+        if isinstance(kpi_snapshot, dict) and kpi_snapshot:
+            for k, v in kpi_snapshot.items():
+                label = str(k).replace("_", " ").title()
+                lines.append(f"- {label}: {v}")
+        else:
+            lines.append("- (No KPI metrics narrative for this run.)")
+        if highlights:
+            lines.append("")
+            lines.append("Highlights:")
+            for h in highlights:
+                lines.append(f"- {h}")
+        if notes:
+            lines.append("")
+            lines.append("Notes:")
+            for n in notes:
+                lines.append(f"- {n}")
+        if next_q:
+            lines.extend(["", f"Next: {next_q}"])
+        return "\n".join(lines).strip()
+
     if mode == "precise":
         request_summary = final_response.get("request_summary", "")
         kpi_snapshot = final_response.get("kpi_snapshot", {}) or {}
@@ -112,6 +141,87 @@ def call_ava_phraser(
     )
 
 
+def run_phrasing_for_final_response(
+    final_response: Dict[str, Any],
+    *,
+    use_ava: bool,
+    strict_validation: bool,
+    thread_id: str,
+    app_user_id: str,
+) -> Dict[str, Any]:
+    """
+    Deterministic or Ava phrasing for an already-built final_response (e.g. saved-report merge).
+    """
+    fallback_text = deterministic_phrase(final_response)
+    phrasing_mode = "deterministic"
+    phrased_text = fallback_text
+    ava_error: Optional[str] = None
+    tid = thread_id.strip() or os.environ.get("AVA_THREAD_ID", "").strip() or "thread-001"
+    uid = app_user_id.strip() or os.environ.get("AVA_APP_USER_ID", "").strip() or "app-user-default"
+
+    force_fallback = os.environ.get("AVA_FORCE_FALLBACK", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    ava_enabled = os.environ.get("AVA_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    transport_enabled = os.environ.get("AVA_STREAMING_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    if use_ava and not force_fallback and ava_enabled and transport_enabled:
+        try:
+            candidate = call_ava_phraser(
+                final_response=final_response,
+                app_user_id=uid,
+                thread_id=tid,
+                strict_validation=strict_validation,
+            )
+            report = validate_ava_output(
+                final_response=final_response,
+                phrased_text=candidate,
+                strict_headings=strict_validation,
+            )
+            if report["is_valid"]:
+                phrased_text = candidate
+                phrasing_mode = "ava"
+            else:
+                phrasing_mode = "deterministic_fallback"
+                ava_error = f"Validation failed: {report}"
+        except Exception as exc:
+            phrasing_mode = "deterministic_fallback"
+            ava_error = str(exc)
+    elif use_ava:
+        phrasing_mode = "deterministic_fallback"
+        ava_error = (
+            "Ava call disabled by environment flags: "
+            f"AVA_FORCE_FALLBACK={force_fallback}, "
+            f"AVA_ENABLED={ava_enabled}, "
+            f"AVA_STREAMING_ENABLED={transport_enabled}"
+        )
+
+    validation_report = validate_ava_output(
+        final_response=final_response,
+        phrased_text=phrased_text,
+        strict_headings=strict_validation,
+    )
+    if strict_validation and not validation_report["is_valid"]:
+        raise RuntimeError(f"Validation failed in strict mode: {validation_report}")
+
+    return {
+        "mode": phrasing_mode,
+        "text": phrased_text,
+        "validation": validation_report,
+        "error": ava_error,
+    }
+
+
 def get_combined_payload(
     input_json: str,
     query: str,
@@ -169,11 +279,6 @@ def main() -> None:
         force_precise=args.force_precise,
     )
     final_response = rendered.get("final_response", {}) or {}
-    fallback_text = deterministic_phrase(final_response)
-
-    phrasing_mode = "deterministic"
-    phrased_text = fallback_text
-    ava_error: Optional[str] = None
     thread_id = (
         args.thread_id.strip()
         or os.environ.get("AVA_THREAD_ID", "").strip()
@@ -184,61 +289,16 @@ def main() -> None:
         or os.environ.get("AVA_APP_USER_ID", "").strip()
         or "app-user-default"
     )
-
-    force_fallback = os.environ.get("AVA_FORCE_FALLBACK", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    ava_enabled = os.environ.get("AVA_ENABLED", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    transport_enabled = os.environ.get("AVA_STREAMING_ENABLED", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-
-    if args.use_ava and not force_fallback and ava_enabled and transport_enabled:
-        try:
-            candidate = call_ava_phraser(
-                final_response=final_response,
-                app_user_id=app_user_id,
-                thread_id=thread_id,
-                strict_validation=args.strict_validation,
-            )
-            report = validate_ava_output(
-                final_response=final_response,
-                phrased_text=candidate,
-                strict_headings=args.strict_validation,
-            )
-            if report["is_valid"]:
-                phrased_text = candidate
-                phrasing_mode = "ava"
-            else:
-                phrasing_mode = "deterministic_fallback"
-                ava_error = f"Validation failed: {report}"
-        except Exception as exc:
-            phrasing_mode = "deterministic_fallback"
-            ava_error = str(exc)
-    elif args.use_ava:
-        phrasing_mode = "deterministic_fallback"
-        ava_error = (
-            "Ava call disabled by environment flags: "
-            f"AVA_FORCE_FALLBACK={force_fallback}, "
-            f"AVA_ENABLED={ava_enabled}, "
-            f"AVA_STREAMING_ENABLED={transport_enabled}"
+    try:
+        ph = run_phrasing_for_final_response(
+            final_response,
+            use_ava=args.use_ava,
+            strict_validation=args.strict_validation,
+            thread_id=thread_id,
+            app_user_id=app_user_id,
         )
-
-    validation_report = validate_ava_output(
-        final_response=final_response,
-        phrased_text=phrased_text,
-        strict_headings=args.strict_validation,
-    )
-    if args.strict_validation and not validation_report["is_valid"]:
-        raise SystemExit(f"Validation failed in strict mode: {validation_report}")
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
     output = {
         "execution_plan": rendered.get("execution_plan"),
@@ -246,10 +306,10 @@ def main() -> None:
         "final_response": final_response,
         "structured_report": build_structured_report(final_response),
         "phrasing": {
-            "mode": phrasing_mode,
-            "text": phrased_text,
-            "validation": validation_report,
-            "error": ava_error,
+            "mode": ph["mode"],
+            "text": ph["text"],
+            "validation": ph["validation"],
+            "error": ph["error"],
         },
     }
     print(json.dumps(output, indent=2, ensure_ascii=False))

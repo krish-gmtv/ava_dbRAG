@@ -72,6 +72,30 @@ def build_structured_report(final_response: Dict[str, Any]) -> Dict[str, Any]:
             },
         }
 
+    if mode == "saved_report":
+        ks = final_response.get("kpi_snapshot") or {}
+        if not isinstance(ks, dict):
+            ks = {}
+        highlights = final_response.get("highlights") or []
+        hl_list = [str(h) for h in highlights if _str(h)]
+        notes = final_response.get("notes") or []
+        note_list = [str(n) for n in notes if _str(n)]
+        return {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "report_kind": "saved_report",
+            "sections": {
+                "request_summary": _optional_str(final_response, "request_summary"),
+                "executive_summary": _optional_str(final_response, "executive_summary"),
+                "kpi_table": _snapshot_to_rows(ks),
+                "highlights": hl_list,
+                "notes": note_list,
+                "suggested_next_question": _optional_str(
+                    final_response, "suggested_next_question"
+                ),
+                "template_id": _optional_str(final_response, "template_id"),
+            },
+        }
+
     if mode == "semantic":
         trend = _optional_str(final_response, "trend_narrative")
         exec_s = _optional_str(final_response, "executive_summary")
@@ -161,6 +185,8 @@ def build_developer_diagnostics(pipeline_output: Dict[str, Any]) -> Dict[str, An
         "phrasing_validation": ph.get("validation"),
         "phrasing_error": ph.get("error"),
     }
+    if isinstance(pipeline_output.get("template_block_runs"), list):
+        out["template_block_runs"] = pipeline_output["template_block_runs"]
     sq = final_response.get("semantic_quality")
     if isinstance(sq, dict) and sq:
         out["semantic_quality"] = sq

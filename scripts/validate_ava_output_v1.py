@@ -92,7 +92,7 @@ def validate_ava_output(
                 warnings.append(msg)
 
     mode = (final_response.get("mode") or "").strip().lower()
-    if mode not in {"precise", "semantic", "force_precise_unavailable"}:
+    if mode not in {"precise", "semantic", "force_precise_unavailable", "saved_report"}:
         warnings.append("Unknown final_response mode.")
 
     if mode == "force_precise_unavailable":
@@ -161,6 +161,12 @@ def validate_ava_output(
             # Reject semantic-only heading in precise mode.
             if "highlights:" in heading_positions:
                 errors.append("Unexpected heading 'Highlights:' in precise mode output.")
+        elif mode == "saved_report":
+            if "next:" not in lower_text:
+                errors.append("Missing required heading 'Next:' for saved report mode.")
+            for h in ("executive summary", "kpi snapshot"):
+                if h not in lower_text:
+                    errors.append(f"Missing required heading '{h.title()}' for saved report mode.")
         elif mode == "semantic":
             if "next:" not in lower_text:
                 errors.append("Missing required heading 'Next:' for semantic mode.")

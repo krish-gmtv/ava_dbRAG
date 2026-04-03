@@ -16,6 +16,8 @@ from structured_report_v1 import (
     build_structured_report,
     build_structured_report_from_ui_fallback,
 )
+from template_executor_v1 import execute_saved_report_plan
+from template_report_orchestrator_v1 import plan_saved_report
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT_DIR / "scripts"
@@ -483,6 +485,53 @@ def guardrail_response(
     }
 
 
+def saved_report_clarification_response(
+    *,
+    query: str,
+    executed_query: str,
+    thread_id: str,
+    app_user_id: str,
+    plan: Dict[str, Any],
+) -> Dict[str, Any]:
+    missing = plan.get("missing_required_slots") or []
+    parts: list[str] = []
+    if "buyer" in missing:
+        parts.append(
+            'Please name a buyer (for example "Buyer 2") so I can run this saved report.'
+        )
+    if "timeframe" in missing:
+        parts.append("Please add a period such as Q1 2019 or an explicit date range.")
+    msg = (
+        " ".join(parts)
+        if parts
+        else "Please add the missing details so I can run this saved report."
+    )
+    ep = {
+        "report_template_id": plan.get("template_id"),
+        "saved_report_plan": plan,
+    }
+    return {
+        "query": query,
+        "executed_query": executed_query,
+        "thread_id": thread_id,
+        "app_user_id": app_user_id,
+        "display_text": msg,
+        "phrasing_mode": "ui_saved_report_clarification",
+        "source_mode": "saved_report_clarification",
+        "selected_handler": None,
+        "report_template_id": plan.get("template_id"),
+        "raw": {
+            "execution_plan": ep,
+            "selected_handler": None,
+            "final_response": None,
+            "phrasing": {
+                "mode": "ui_saved_report_clarification",
+                "text": msg,
+            },
+        },
+    }
+
+
 def temporary_service_fallback_response(
     query: str,
     thread_id: str,
@@ -607,6 +656,86 @@ class ChatHandler(BaseHTTPRequestHandler):
                     with THREAD_CONTEXT_LOCK:
                         thread_ctx["pending_listing_followup"] = False
                         thread_ctx["pending_trend_followup"] = False
+
+        saved_plan = plan_saved_report(rewritten_query)
+        if saved_plan is not None:
+            if not saved_plan.get("ready_to_execute"):
+                clar = saved_report_clarification_response(
+                    query=query,
+                    executed_query=rewritten_query,
+                    thread_id=thread_id,
+                    app_user_id=app_user_id,
+                    plan=saved_plan,
+                )
+                attach_structured_payload(clar, developer_mode)
+                self._send_json(HTTPStatus.OK, clar)
+                return
+            try:
+                pipeline_output = execute_saved_report_plan(
+                    rewritten_query,
+                    saved_plan,
+                    use_ava=use_ava,
+                    strict_validation=strict_validation,
+                    thread_id=thread_id,
+                    app_user_id=app_user_id,
+                    force_precise=force_precise,
+                )
+            except Exception as exc:
+                err_text = str(exc)
+                if re.search(
+                    r"(read\s+timed\s+out|timed\s+out\s+after\s+retry|timed\s+out|timeout|etimedout|readtimeout|connect\s+timeout)",
+                    err_text,
+                    flags=re.IGNORECASE,
+                ):
+                    fb = temporary_service_fallback_response(
+                        query=query,
+                        thread_id=thread_id,
+                        app_user_id=app_user_id,
+                    )
+                    attach_structured_payload(fb, developer_mode)
+                    self._send_json(HTTPStatus.OK, fb)
+                    return
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Saved report execution failed",
+                        "details": str(exc),
+                    },
+                )
+                return
+
+            update_thread_ctx(thread_id, pipeline_output)
+            phrasing = (
+                (pipeline_output.get("phrasing") or {})
+                if isinstance(pipeline_output, dict)
+                else {}
+            )
+            final_response = (
+                (pipeline_output.get("final_response") or {})
+                if isinstance(pipeline_output, dict)
+                else {}
+            )
+            execution_plan = (
+                (pipeline_output.get("execution_plan") or {})
+                if isinstance(pipeline_output, dict)
+                else {}
+            )
+            response = {
+                "query": query,
+                "executed_query": rewritten_query,
+                "thread_id": thread_id,
+                "app_user_id": app_user_id,
+                "display_text": phrasing.get("text", ""),
+                "phrasing_mode": phrasing.get("mode", "unknown"),
+                "source_mode": final_response.get("mode", "unknown"),
+                "selected_handler": pipeline_output.get("selected_handler"),
+                "report_template_id": execution_plan.get("report_template_id"),
+                "force_precise": force_precise,
+                "raw": pipeline_output,
+            }
+            attach_structured_payload(response, developer_mode)
+            self._send_json(HTTPStatus.OK, response)
+            return
 
         if should_guardrail_query(rewritten_query):
             mode = "greeting" if is_greeting(query) else "offtopic"

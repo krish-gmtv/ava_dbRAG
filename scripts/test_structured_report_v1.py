@@ -67,6 +67,23 @@ class StructuredReportMappingTests(unittest.TestCase):
         self.assertEqual(rep["report_kind"], "force_precise_unavailable")
         self.assertEqual(rep["sections"]["executive_summary"], "Detail.")
 
+    def test_saved_report_kind(self) -> None:
+        fr = {
+            "mode": "saved_report",
+            "template_id": "buyer_performance_report_v1",
+            "request_summary": "Buyer performance report: Buyer 1, Q1 2018.",
+            "executive_summary": "Exec body.",
+            "kpi_snapshot": {"kpi_summary": "KPI text", "listing_row_count": "3"},
+            "highlights": ["H1"],
+            "notes": ["N1"],
+            "suggested_next_question": "Next?",
+        }
+        rep = sr.build_structured_report(fr)
+        self.assertEqual(rep["report_kind"], "saved_report")
+        self.assertEqual(rep["sections"]["executive_summary"], "Exec body.")
+        keys = {r["metric_key"] for r in rep["sections"]["kpi_table"]}
+        self.assertEqual(keys, {"kpi_summary", "listing_row_count"})
+
     def test_ui_fallback(self) -> None:
         rep = sr.build_structured_report_from_ui_fallback(
             display_text="Hello",

@@ -31,6 +31,16 @@ def build_mode_aware_ws_message(final_response: Dict[str, Any]) -> str:
             "- 'Highlights:' section\n"
             "- 'Next:' section"
         )
+    elif mode == "saved_report":
+        contract_description = (
+            "Visible output contract (saved report template):\n"
+            "- Opening request summary line (no heading required)\n"
+            "- 'Executive summary' section\n"
+            "- 'KPI snapshot' section (bullet list from kpi_snapshot)\n"
+            "- Optional 'Highlights:' section\n"
+            "- Optional 'Notes:' section\n"
+            "- 'Next:' section"
+        )
     else:
         contract_description = (
             "Visible output contract:\n"
@@ -46,6 +56,17 @@ def build_mode_aware_ws_message(final_response: Dict[str, Any]) -> str:
             "kpi_snapshot": final_response.get("kpi_snapshot"),
             "supporting_details": final_response.get("supporting_details"),
             "data_coverage_notes": final_response.get("data_coverage_notes"),
+            "suggested_next_question": final_response.get("suggested_next_question"),
+        }
+    elif mode == "saved_report":
+        payload = {
+            "mode": "saved_report",
+            "template_id": final_response.get("template_id"),
+            "request_summary": final_response.get("request_summary"),
+            "executive_summary": final_response.get("executive_summary"),
+            "kpi_snapshot": final_response.get("kpi_snapshot"),
+            "highlights": final_response.get("highlights"),
+            "notes": final_response.get("notes"),
             "suggested_next_question": final_response.get("suggested_next_question"),
         }
     else:
