@@ -2,12 +2,12 @@
 Template-driven report **planning** (v1).
 
 Produces a deterministic JSON plan: template, slots, section order, and which data blocks
-are intended to run. The next milestone wires this plan to ``execute_query_v1`` /
-``answer_renderer_v1`` so each block fills the right section.
+are intended to run. Execution is implemented in ``template_executor_v1`` (per-block
+``answer_renderer_v1`` calls) and wired from ``chat_ui_server_v1`` when the plan is ready.
 
-Flow (target end state):
-  user query → match template → fill slots → execute allowed blocks in template order
-  → merge into template section layout → Ava phrases inside sections only.
+Flow:
+  user query → match template → fill slots → execute allowed blocks → merge
+  ``final_response`` (mode ``saved_report``) → deterministic or Ava phrasing → UI.
 """
 
 from __future__ import annotations
