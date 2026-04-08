@@ -1,55 +1,15 @@
-import os
-from dataclasses import dataclass
-from typing import Optional
+"""Compatibility entrypoint for Ava auth helpers."""
 
-import requests
-from dotenv import load_dotenv
+from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 
-load_dotenv()
-
-AUTH_URL = "https://ava.andrew-chat.com/api/v1/user"
-
-
-@dataclass(frozen=True)
-class AvaAuthConfig:
-    token: Optional[str] = None
-    username: str = ""
-    password: str = ""
-
-
-def load_ava_auth_config() -> AvaAuthConfig:
-    token = (os.environ.get("AVA_TOKEN") or "").strip() or None
-    username = (os.environ.get("AVA_USERNAME") or "").strip()
-    password = (os.environ.get("AVA_PASSWORD") or "").strip()
-    return AvaAuthConfig(token=token, username=username, password=password)
-
-
-def resolve_token() -> str:
-    """
-    Resolve Ava authorization token.
-    Safety: prefer AVA_TOKEN; only call auth endpoint if token is missing
-    and username/password exist.
-    """
-    cfg = load_ava_auth_config()
-    if cfg.token:
-        return cfg.token
-
-    if not cfg.username or not cfg.password:
-        raise RuntimeError(
-            "Ava token not found. Set AVA_TOKEN (preferred) or AVA_USERNAME + AVA_PASSWORD."
-        )
-
-    resp = requests.post(
-        AUTH_URL,
-        headers={"Content-Type": "application/json"},
-        json={"username": cfg.username, "password": cfg.password},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    token = (data.get("authorization") or "").strip()
-    if not token:
-        raise RuntimeError("Auth response missing 'authorization' token.")
-    return token
+_impl_path = Path(__file__).resolve().parent / "ava" / "ava_auth.py"
+_spec = importlib.util.spec_from_file_location("_ava_auth_impl", _impl_path)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Could not load ava_auth implementation at {_impl_path}")
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+globals().update({k: getattr(_mod, k) for k in dir(_mod) if not k.startswith('__')})
 

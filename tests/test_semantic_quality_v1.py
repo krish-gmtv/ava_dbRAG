@@ -52,7 +52,7 @@ class SemanticQualityTests(unittest.TestCase):
             },
         }
         q = sq.evaluate_semantic_quality(_plan(), ho)
-        self.assertEqual(q.render_mode, "weak_semantic")
+        self.assertEqual(q.render_mode, "no_semantic_summary")
         self.assertFalse(q.metadata_aligned)
 
 

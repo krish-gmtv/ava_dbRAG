@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-import template_executor_v1 as te
+import scripts.templates.template_executor_v1 as te
 
 
 def _fake_render(
