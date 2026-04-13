@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from intent_router_v1 import period_from_execution_plan
+from semantic_catalog_v1 import format_available_periods_line
 from semantic_quality_v1 import evaluate_semantic_quality
 
 
@@ -20,6 +21,40 @@ def _honest_no_semantic_summary(buyer_label: str, period_label: str) -> str:
         f"in {period_label}. Try another quarter or year, or use the SQL / precise toggle "
         f"for Postgres row listings (upsheets or opportunities)."
     )
+
+
+def _no_semantic_summary_with_hints(
+    *,
+    buyer_label: str,
+    buyer_id: Any,
+    requested_period_label: str,
+    best_period_label: Any,
+    reasons: List[str],
+) -> str:
+    base = _honest_no_semantic_summary(buyer_label, requested_period_label)
+    bid = None
+    try:
+        bid = int(buyer_id) if buyer_id is not None else None
+    except Exception:
+        bid = None
+
+    # If we fail-closed due to period mismatch, say so explicitly.
+    if any("metadata_mismatch_fail_closed" in r for r in reasons) or any(
+        str(r).startswith("top_match_period_") for r in reasons
+    ):
+        bp = str(best_period_label or "").strip()
+        if bp:
+            base = (
+                f"{base}\n\n"
+                f"Note: the closest semantic match appears to be for {bp}, but you requested "
+                f"{requested_period_label}. I’m not showing the wrong-quarter summary."
+            )
+
+    if bid is not None:
+        line = format_available_periods_line(bid)
+        if line:
+            base = f"{base}\n\n{line}"
+    return base
 
 
 _RETRIEVAL_WEAK_STATUS = (
@@ -369,12 +404,21 @@ def render_semantic(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dic
     )
 
     if quality.render_mode == "no_semantic_summary":
+        highlights_none: List[str] = []
+        # Even when failing closed, show what the top match was for debugging/trust.
+        highlights_none.extend(_score_highlights())
         return {
             **base_response,
-            "executive_summary": _honest_no_semantic_summary(buyer_label, period_label),
+            "executive_summary": _no_semantic_summary_with_hints(
+                buyer_label=buyer_label,
+                buyer_id=buyer_id,
+                requested_period_label=period_label,
+                best_period_label=best_period_label,
+                reasons=quality.reasons,
+            ),
             "trend_narrative": "",
             "key_drivers": [],
-            "highlights": [],
+            "highlights": highlights_none,
             "retrieval_status": (
                 "No reliable semantic summary was retrieved at the current quality thresholds."
             ),

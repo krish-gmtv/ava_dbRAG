@@ -8,10 +8,16 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ava_phraser_v1 import get_combined_payload, run_phrasing_for_final_response
+from report_normalizer_v2 import BlockOutput, normalize_saved_report_v2
 from structured_report_v1 import build_structured_report
+
+SAVED_REPORT_RUNTIME_VERSION = "v2_typed_blocks_2026-04-09"
 
 _DEFAULT_NEXT = (
     "Would you like a Postgres row listing for the same buyer and period? "
@@ -37,9 +43,6 @@ def _block_queries(buyer_id: int, period_label: str) -> Dict[str, str]:
     return {
         "semantic_quarterly_narrative": (
             f"How did Buyer {buyer_id} perform in {period_label}?"
-        ),
-        "kpi_snapshot_quarter": (
-            f"What were the KPI metrics for Buyer {buyer_id} in {period_label}?"
         ),
         "row_listing_upsheets": (
             f"List all upsheets for Buyer {buyer_id} in {period_label}?"
@@ -87,6 +90,82 @@ def _executive_from_narrative(fr: Dict[str, Any]) -> str:
     return "\n\n".join(parts).strip()
 
 
+def _run_precise_buyer_quarter_kpis(
+    *,
+    buyer_id: int,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    """
+    KPI-source rule: KPIs must come from a declared source, never narrative text.
+    Here we satisfy KPI snapshot via the precise KPI script (SQL aggregates).
+    """
+    scripts_dir = Path(__file__).resolve().parents[1]
+    script_path = scripts_dir / "precise_get_buyer_quarter_kpis.py"
+    if not script_path.exists():
+        raise RuntimeError(f"Missing KPI script: {script_path}")
+
+    # The script requires --query even when overriding with explicit args.
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--query",
+        f"Buyer {buyer_id} KPIs between {start_date} and {end_date}",
+        "--buyer-id",
+        str(int(buyer_id)),
+        "--start-date",
+        str(start_date),
+        "--end-date",
+        str(end_date),
+    ]
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "precise_get_buyer_quarter_kpis.py failed "
+            f"(exit_code={proc.returncode}). stderr={proc.stderr.strip()}"
+        )
+
+    try:
+        return json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            "precise_get_buyer_quarter_kpis.py returned non-JSON output. "
+            f"error={e} stdout={(proc.stdout or '').strip()[:500]}"
+        ) from e
+
+
+def _kpi_snapshot_from_precise_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract a stable KPI snapshot dict from the precise KPI script output.
+    We intentionally keep it as a dict because the UI contract already maps
+    snapshot→rows deterministically.
+    """
+    # Current precise KPI script returns:
+    # { "result": { ... }, ... }  (not a renderer-shaped final_response)
+    res = payload.get("result")
+    if isinstance(res, dict) and res:
+        return {str(k): v for k, v in res.items()}
+
+    # Backward-compatible shapes (if we ever wrap it as a final_response later).
+    fr = payload.get("final_response") or {}
+    snap = fr.get("kpi_snapshot") or {}
+    if isinstance(snap, dict) and snap:
+        return {str(k): v for k, v in snap.items()}
+
+    # Fallback: best-effort extraction from other common payload keys.
+    out: Dict[str, Any] = {}
+    k = payload.get("kpis") or payload.get("metrics") or {}
+    if isinstance(k, dict):
+        out.update({str(kk): vv for kk, vv in k.items()})
+    return out
+
+
 def execute_saved_report_plan(
     user_query: str,
     plan: Dict[str, Any],
@@ -108,18 +187,54 @@ def execute_saved_report_plan(
 
     period_label = period_label_from_slots(slots)
     queries = _block_queries(int(buyer_id), period_label)
+    tf = slots.get("timeframe") or {}
+    start_date = str(tf.get("start") or "").strip()
+    end_date = str(tf.get("end") or "").strip()
+    if not start_date or not end_date:
+        raise ValueError("saved report plan missing timeframe start/end for KPI sourcing")
 
     narrative_fr: Dict[str, Any] = {}
-    kpi_fr: Dict[str, Any] = {}
     listing_fr: Optional[Dict[str, Any]] = None
 
     block_runs: List[Dict[str, Any]] = []
     base_ep: Dict[str, Any] = {}
+    block_outputs: List[BlockOutput] = []
 
     for row in plan.get("data_blocks") or []:
         if row.get("status") != "selected":
             continue
         bid = row.get("block_id")
+        btype = str(row.get("block_type") or "").strip() or "unknown"
+        out_key = str(row.get("output_key") or "").strip() or "unknown"
+
+        if bid == "kpi_snapshot_quarter":
+            # KPI-source rule: always satisfy KPI snapshot from precise SQL aggregates.
+            kpi_payload = _run_precise_buyer_quarter_kpis(
+                buyer_id=int(buyer_id),
+                start_date=start_date,
+                end_date=end_date,
+            )
+            ks = _kpi_snapshot_from_precise_payload(kpi_payload)
+            block_outputs.append(
+                BlockOutput(
+                    block_id=bid,
+                    block_type="kpi_table",
+                    output_key=out_key,
+                    source="precise",
+                    payload={"snapshot": ks},
+                )
+            )
+            block_runs.append(
+                {
+                    "block_id": bid,
+                    "sub_query": f"Precise KPIs for Buyer {buyer_id} {period_label}",
+                    "force_precise": True,
+                    "selected_handler": "precise_get_buyer_quarter_kpis",
+                    "execution_plan": {"mode": "precise", "intent": "buyer_quarter_kpis"},
+                }
+            )
+            continue
+
         if bid not in queries:
             continue
         sub_q = queries[bid]
@@ -142,49 +257,84 @@ def execute_saved_report_plan(
 
         if bid == "semantic_quarterly_narrative":
             narrative_fr = fr
-        elif bid == "kpi_snapshot_quarter":
-            kpi_fr = fr
+            block_outputs.append(
+                BlockOutput(
+                    block_id=bid,
+                    block_type="executive_summary",
+                    output_key=out_key or "executive_summary",
+                    source="semantic",
+                    payload={"text": _executive_from_narrative(fr)},
+                )
+            )
+            # Normalize common narrative-derived sections as explicit typed outputs.
+            hs = _merge_highlights(fr)
+            if hs:
+                block_outputs.append(
+                    BlockOutput(
+                        block_id=f"{bid}__highlights",
+                        block_type="highlights",
+                        output_key="highlights",
+                        source="semantic",
+                        payload={"items": hs},
+                    )
+                )
+            ns = _merge_notes(fr)
+            if ns:
+                block_outputs.append(
+                    BlockOutput(
+                        block_id=f"{bid}__notes",
+                        block_type="notes",
+                        output_key="notes",
+                        source="semantic",
+                        payload={"items": ns},
+                    )
+                )
+            # Carry over semantic quality (trust contract).
+            sq = fr.get("semantic_quality")
+            if isinstance(sq, dict) and sq:
+                pass
         elif bid == "row_listing_upsheets":
             listing_fr = fr
+            snap = fr.get("kpi_snapshot") if isinstance(fr, dict) else {}
+            block_outputs.append(
+                BlockOutput(
+                    block_id=bid,
+                    block_type="row_listing",
+                    output_key=out_key,
+                    source="precise" if (fr.get("mode") == "precise") else "unknown",
+                    payload={
+                        "kpi_snapshot": snap if isinstance(snap, dict) else {},
+                        "notes": _merge_notes(fr),
+                    },
+                )
+            )
 
     if not narrative_fr:
         raise RuntimeError("Template executor produced no narrative block output.")
-
-    kpi_snapshot: Dict[str, Any] = {}
-    if kpi_fr:
-        summary = str(kpi_fr.get("executive_summary") or "").strip()
-        if summary:
-            kpi_snapshot["kpi_summary"] = summary
-    if listing_fr and listing_fr.get("mode") == "precise":
-        snap = listing_fr.get("kpi_snapshot") or {}
-        if isinstance(snap, dict):
-            for k, v in snap.items():
-                kpi_snapshot[f"listing_{k}"] = v
 
     merged_plan: Dict[str, Any] = {
         **base_ep,
         "intent": "saved_report_template",
         "report_template_id": plan.get("template_id"),
         "saved_report_plan": plan,
+        "saved_report_runtime_version": SAVED_REPORT_RUNTIME_VERSION,
     }
 
-    final_response: Dict[str, Any] = {
-        "mode": "saved_report",
-        "template_id": str(plan.get("template_id") or ""),
-        "request_summary": (
-            f"{plan.get('display_name', 'Saved report')}: Buyer {buyer_id}, {period_label}. "
-            f"Original request: {user_query.strip()}"
+    final_response = normalize_saved_report_v2(
+        user_query=user_query,
+        template_id=str(plan.get("template_id") or ""),
+        display_name=str(plan.get("display_name") or "Saved report"),
+        buyer_id=int(buyer_id),
+        period_label=period_label,
+        section_order=list(plan.get("section_order") or []),
+        block_outputs=block_outputs,
+        semantic_quality=narrative_fr.get("semantic_quality")
+        if isinstance(narrative_fr.get("semantic_quality"), dict)
+        else None,
+        suggested_next_question=(
+            str(narrative_fr.get("suggested_next_question") or "").strip() or _DEFAULT_NEXT
         ),
-        "executive_summary": _executive_from_narrative(narrative_fr),
-        "kpi_snapshot": kpi_snapshot,
-        "highlights": _merge_highlights(narrative_fr, kpi_fr),
-        "notes": _merge_notes(narrative_fr, kpi_fr, listing_fr or {}),
-        "suggested_next_question": str(
-            narrative_fr.get("suggested_next_question") or ""
-        ).strip()
-        or _DEFAULT_NEXT,
-        "semantic_quality": narrative_fr.get("semantic_quality"),
-    }
+    )
 
     ph = run_phrasing_for_final_response(
         final_response,
@@ -195,11 +345,22 @@ def execute_saved_report_plan(
     )
 
     return {
+        "saved_report_runtime_version": SAVED_REPORT_RUNTIME_VERSION,
         "execution_plan": merged_plan,
         "selected_handler": f"saved_report_{plan.get('template_id')}",
         "final_response": final_response,
         "structured_report": build_structured_report(final_response),
         "template_block_runs": block_runs,
+        "template_block_outputs_v2": [
+            {
+                "block_id": bo.block_id,
+                "block_type": bo.block_type,
+                "output_key": bo.output_key,
+                "source": bo.source,
+                "payload": bo.payload,
+            }
+            for bo in block_outputs
+        ],
         "phrasing": {
             "mode": ph["mode"],
             "text": ph["text"],

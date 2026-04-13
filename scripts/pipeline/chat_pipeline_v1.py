@@ -27,7 +27,7 @@ def process_chat_request(
     developer_mode: bool,
     thread_id: str,
     app_user_id: str,
-    # injected helpers (owned by chat_ui_server_v1)
+    # added helpers objects after file restructure (owned by chat_ui_server_v1)
     get_thread_ctx: Callable[[str], Dict[str, Any]],
     thread_ctx_lock: Any,
     is_gratitude: Callable[[str], bool],
@@ -45,7 +45,7 @@ def process_chat_request(
     # saved report path
     plan_saved_report: Callable[[str], Optional[Dict[str, Any]]],
     execute_saved_report_plan: Callable[..., Dict[str, Any]],
-    # legacy pipeline path
+    # failback to pipeline execution for queries without saved plans
     run_pipeline: Callable[..., Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
@@ -55,7 +55,7 @@ def process_chat_request(
     """
     thread_ctx = get_thread_ctx(thread_id)
 
-    # Follow-through behavior: if the previous response suggested a next step and user affirms,
+    # Follow-through behavior: if the previous response suggested a next step and user affirms(for now that is a yes),
     # execute that recommendation for the same buyer/period.
     if is_gratitude(query):
         g = gratitude_response(
@@ -68,6 +68,7 @@ def process_chat_request(
 
     rewritten_query = query
     if is_affirmative(query):
+        #Taking user input in the same sequence that is a follow up so thread.
         if bool(thread_ctx.get("pending_listing_followup")):
             candidate = build_list_upsheets_followup_query(thread_ctx)
             if candidate:
@@ -108,6 +109,7 @@ def process_chat_request(
             )
         except Exception as exc:
             err_text = str(exc)
+            #In case it takes too long to work through the saved report execution, we want to return a fallback response instead of an error.
             if TimeoutRegex.search(err_text):
                 fb = temporary_service_fallback_response(
                     query=query,
@@ -151,7 +153,7 @@ def process_chat_request(
         }
         attach_structured_payload(response, developer_mode)
         return response
-
+#Off topic drift check and fallback to guardrail response if needed. This is the last check before running the potentially expensive pipeline execution.
     if should_guardrail_query(rewritten_query):
         mode = "greeting" if is_greeting(query) else "offtopic"
         gr = guardrail_response(

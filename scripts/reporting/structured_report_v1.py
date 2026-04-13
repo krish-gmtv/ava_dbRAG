@@ -179,6 +179,8 @@ def build_developer_diagnostics(pipeline_output: Dict[str, Any]) -> Dict[str, An
         "phrasing_mode": _str(ph.get("mode")),
         "final_response_mode": _str(final_response.get("mode")),
         "selected_handler": pipeline_output.get("selected_handler"),
+        "saved_report_runtime_version": pipeline_output.get("saved_report_runtime_version")
+        or plan.get("saved_report_runtime_version"),
         "report_template_id": plan.get("report_template_id"),
         "reason_codes": plan.get("reason_codes"),
         "execution_plan": plan,
@@ -187,6 +189,8 @@ def build_developer_diagnostics(pipeline_output: Dict[str, Any]) -> Dict[str, An
     }
     if isinstance(pipeline_output.get("template_block_runs"), list):
         out["template_block_runs"] = pipeline_output["template_block_runs"]
+    if isinstance(pipeline_output.get("template_block_outputs_v2"), list):
+        out["template_block_outputs_v2"] = pipeline_output["template_block_outputs_v2"]
     sq = final_response.get("semantic_quality")
     if isinstance(sq, dict) and sq:
         out["semantic_quality"] = sq

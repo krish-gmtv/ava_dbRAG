@@ -23,9 +23,12 @@ class DataBlockSpec:
 
     block_id: str
     description: str
+    block_type: str
     # How this block is usually satisfied given current product routing.
     retrieval_mode: str  # semantic | precise | composition
     query_family_hint: str
+    # Which UI section key this block intends to fill.
+    output_key: str
     requires_explicit_user_request: bool = False
 
 
@@ -72,20 +75,26 @@ BUYER_PERFORMANCE_REPORT_V1 = SavedReportTemplate(
         DataBlockSpec(
             block_id="semantic_quarterly_narrative",
             description="Quarterly narrative from semantic retrieval (precomputed summaries).",
+            block_type="executive_summary",
             retrieval_mode="semantic",
             query_family_hint="buyer_performance_summary",
+            output_key="executive_summary",
         ),
         DataBlockSpec(
             block_id="kpi_snapshot_quarter",
-            description="KPI-oriented metrics aligned with router family buyer_quarter_kpis (semantic path in current product).",
-            retrieval_mode="semantic",
+            description="Buyer-quarter KPI table sourced from precise SQL aggregates (not narrative).",
+            block_type="kpi_table",
+            retrieval_mode="precise",
             query_family_hint="buyer_quarter_kpis",
+            output_key="kpi_snapshot",
         ),
         DataBlockSpec(
             block_id="row_listing_upsheets",
             description="Raw Postgres upsheet rows; precise listing path.",
+            block_type="row_listing",
             retrieval_mode="precise",
             query_family_hint="list_buyer_upsheets",
+            output_key="kpi_snapshot",
             requires_explicit_user_request=True,
         ),
     ),
