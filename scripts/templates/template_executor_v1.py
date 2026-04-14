@@ -203,12 +203,14 @@ def execute_saved_report_plan(
     for row in plan.get("data_blocks") or []:
         if row.get("status") != "selected":
             continue
-        bid = row.get("block_id")
+        bid = str(row.get("block_id") or "").strip()
         btype = str(row.get("block_type") or "").strip() or "unknown"
         out_key = str(row.get("output_key") or "").strip() or "unknown"
+        source_mode = str(row.get("source_mode") or row.get("retrieval_mode") or "").strip()
+        qfam = str(row.get("query_family_hint") or "").strip()
 
-        if bid == "kpi_snapshot_quarter":
-            # KPI-source rule: always satisfy KPI snapshot from precise SQL aggregates.
+        # Spec-driven KPI block (no hidden block_id branching).
+        if btype == "kpi_table" and source_mode == "precise" and qfam == "buyer_quarter_kpis":
             kpi_payload = _run_precise_buyer_quarter_kpis(
                 buyer_id=int(buyer_id),
                 start_date=start_date,
@@ -217,16 +219,16 @@ def execute_saved_report_plan(
             ks = _kpi_snapshot_from_precise_payload(kpi_payload)
             block_outputs.append(
                 BlockOutput(
-                    block_id=bid,
+                    block_id=bid or "kpi_table",
                     block_type="kpi_table",
-                    output_key=out_key,
+                    output_key=out_key or "kpi_snapshot",
                     source="precise",
                     payload={"snapshot": ks},
                 )
             )
             block_runs.append(
                 {
-                    "block_id": bid,
+                    "block_id": bid or "kpi_table",
                     "sub_query": f"Precise KPIs for Buyer {buyer_id} {period_label}",
                     "force_precise": True,
                     "selected_handler": "precise_get_buyer_quarter_kpis",
@@ -255,7 +257,7 @@ def execute_saved_report_plan(
             }
         )
 
-        if bid == "semantic_quarterly_narrative":
+        if btype == "executive_summary":
             narrative_fr = fr
             block_outputs.append(
                 BlockOutput(
@@ -293,7 +295,7 @@ def execute_saved_report_plan(
             sq = fr.get("semantic_quality")
             if isinstance(sq, dict) and sq:
                 pass
-        elif bid == "row_listing_upsheets":
+        elif btype == "row_listing":
             listing_fr = fr
             snap = fr.get("kpi_snapshot") if isinstance(fr, dict) else {}
             block_outputs.append(

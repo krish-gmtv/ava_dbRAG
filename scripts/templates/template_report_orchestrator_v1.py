@@ -25,6 +25,8 @@ from template_matcher_v1 import (
     missing_required_slots,
 )
 
+SAVED_REPORT_PLAN_CONTRACT_VERSION = "v2_template_contract_2026-04-14"
+
 
 def _blocks_to_run(
     template_id: str,
@@ -63,6 +65,7 @@ def plan_saved_report(user_query: str) -> Optional[Dict[str, Any]]:
     missing = missing_required_slots(tpl, slots)
     return {
         "kind": "saved_report_plan_v1",
+        "contract_version": SAVED_REPORT_PLAN_CONTRACT_VERSION,
         "template_id": tid,
         "display_name": tpl.display_name,
         "purpose": tpl.purpose,

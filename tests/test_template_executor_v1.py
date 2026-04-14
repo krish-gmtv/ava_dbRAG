@@ -61,6 +61,8 @@ class TemplateExecutorMergeTests(unittest.TestCase):
                     "block_id": "kpi_snapshot_quarter",
                     "block_type": "kpi_table",
                     "output_key": "kpi_snapshot",
+                    "source_mode": "precise",
+                    "query_family_hint": "buyer_quarter_kpis",
                     "status": "selected",
                 },
                 {"block_id": "row_listing_upsheets", "status": "skipped_not_requested"},
@@ -78,10 +80,7 @@ class TemplateExecutorMergeTests(unittest.TestCase):
                 te,
                 "_run_precise_buyer_quarter_kpis",
                 return_value={
-                    "final_response": {
-                        "mode": "precise",
-                        "kpi_snapshot": {"close_rate": "42.1%", "conversion_rate": "18.3%"},
-                    }
+                    "result": {"close_rate": "42.1%", "conversion_rate": "18.3%"}
                 },
             ):
                 with patch.object(te, "run_phrasing_for_final_response") as ph:

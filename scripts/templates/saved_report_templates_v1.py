@@ -29,7 +29,16 @@ class DataBlockSpec:
     query_family_hint: str
     # Which UI section key this block intends to fill.
     output_key: str
+    # Canonical name: source mode for the block's truth. Keep retrieval_mode for backward-compat.
+    source_mode: str = ""
+    # Optional enforcement hints owned by the template spec.
+    runtime_rules: Tuple[str, ...] = ()
     requires_explicit_user_request: bool = False
+
+    def __post_init__(self) -> None:  # type: ignore[override]
+        # Ensure source_mode defaults to retrieval_mode if not explicitly set.
+        if not self.source_mode:
+            object.__setattr__(self, "source_mode", self.retrieval_mode)
 
 
 @dataclass(frozen=True)
