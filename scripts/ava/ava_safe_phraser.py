@@ -11,6 +11,7 @@ from ava_session_manager import (
     invalidate_thread_session,
 )
 from ava_ws_client import stream_chat_text
+from prompt_assembler_v1 import build_saved_report_ws_message
 
 
 def build_mode_aware_ws_message(final_response: Dict[str, Any]) -> str:
@@ -59,6 +60,26 @@ def build_mode_aware_ws_message(final_response: Dict[str, Any]) -> str:
             "suggested_next_question": final_response.get("suggested_next_question"),
         }
     elif mode == "saved_report":
+        # Prefer governed prompt-module assembly when the executor attached typed inputs.
+        assembly_inputs = final_response.get("_assembly_inputs")
+        if isinstance(assembly_inputs, dict) and isinstance(
+            assembly_inputs.get("block_outputs"), list
+        ):
+            raw_module_ids = assembly_inputs.get("module_ids")
+            module_ids = None
+            if isinstance(raw_module_ids, (list, tuple)) and raw_module_ids:
+                module_ids = tuple(
+                    str(x) for x in raw_module_ids if isinstance(x, str) and x.strip()
+                )
+            kwargs: Dict[str, Any] = dict(
+                final_response=final_response,
+                block_outputs=assembly_inputs.get("block_outputs") or [],
+                buyer_label=str(assembly_inputs.get("buyer_label") or ""),
+                period_label=str(assembly_inputs.get("period_label") or ""),
+            )
+            if module_ids:
+                kwargs["module_ids"] = module_ids
+            return build_saved_report_ws_message(**kwargs)
         payload = {
             "mode": "saved_report",
             "template_id": final_response.get("template_id"),

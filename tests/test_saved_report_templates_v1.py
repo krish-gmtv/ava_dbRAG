@@ -51,7 +51,11 @@ class SavedReportTemplateRegistryTests(unittest.TestCase):
 
 class TemplateOrchestratorTests(unittest.TestCase):
     def test_no_match_for_generic_question(self) -> None:
-        self.assertIsNone(orch.plan_saved_report("How did Buyer 2 perform in Q1 2019?"))
+        # Routing convergence: buyer+period performance question should map to saved report.
+        plan = orch.plan_saved_report("How did Buyer 2 perform in Q1 2019?")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["template_id"], "buyer_performance_report_v1")
 
     def test_match_and_slots(self) -> None:
         q = "I want a buyer performance report on Buyer 2 for Q1 2019"

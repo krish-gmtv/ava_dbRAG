@@ -17,6 +17,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
+from intent_router_v1 import parse_buyer_id, parse_timeframe
 from saved_report_templates_v1 import get_template
 from template_matcher_v1 import (
     explicit_listing_requested,
@@ -59,7 +60,17 @@ def plan_saved_report(user_query: str) -> Optional[Dict[str, Any]]:
         return None
     tid = match_saved_report_template(q)
     if tid is None:
-        return None
+        # Routing convergence: if the user clearly asks a buyer-quarter performance question,
+        # prefer the saved-report template even without explicit "report" phrasing.
+        ql = q.lower()
+        wants_performance = ("perform" in ql) or ("performance" in ql)
+        buyer_id = parse_buyer_id(q)
+        tf = parse_timeframe(q) or {}
+        has_period = bool(tf.get("raw_text") or tf.get("start") or tf.get("end"))
+        if wants_performance and (buyer_id is not None) and has_period:
+            tid = "buyer_performance_report_v1"
+        else:
+            return None
     tpl = get_template(tid)
     slots = extract_template_slots(q, tpl)
     missing = missing_required_slots(tpl, slots)
@@ -73,6 +84,7 @@ def plan_saved_report(user_query: str) -> Optional[Dict[str, Any]]:
         "missing_required_slots": missing,
         "section_order": list(tpl.section_order),
         "phrasing_rules": list(tpl.phrasing_rules),
+        "prompt_modules": list(tpl.prompt_modules),
         "data_blocks": _blocks_to_run(tid, user_query=q),
         "ready_to_execute": len(missing) == 0,
     }

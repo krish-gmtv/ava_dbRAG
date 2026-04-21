@@ -191,6 +191,8 @@ def build_developer_diagnostics(pipeline_output: Dict[str, Any]) -> Dict[str, An
         out["template_block_runs"] = pipeline_output["template_block_runs"]
     if isinstance(pipeline_output.get("template_block_outputs_v2"), list):
         out["template_block_outputs_v2"] = pipeline_output["template_block_outputs_v2"]
+    if isinstance(pipeline_output.get("prompt_modules"), dict):
+        out["prompt_modules"] = pipeline_output["prompt_modules"]
     sq = final_response.get("semantic_quality")
     if isinstance(sq, dict) and sq:
         out["semantic_quality"] = sq

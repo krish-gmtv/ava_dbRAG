@@ -16,6 +16,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Tuple
 
+from prompt_modules_v1 import PROMPT_MODULES
+from template_docs_v1 import load_template_docs_from_dir, resolve_templates_dir
+
 
 @dataclass(frozen=True)
 class DataBlockSpec:
@@ -56,6 +59,19 @@ class SavedReportTemplate:
     # Blocks that must never run unless the user clearly asks (e.g. raw listings).
     disallowed_without_explicit_request: FrozenSet[str]
     phrasing_rules: Tuple[str, ...]
+    # Ordered list of prompt module ids (from the governed prompt module registry)
+    # that the phrasing layer will run for this template. Empty means "use the
+    # executor's default saved-report module selection".
+    prompt_modules: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:  # type: ignore[override]
+        if self.prompt_modules:
+            unknown = [mid for mid in self.prompt_modules if mid not in PROMPT_MODULES]
+            if unknown:
+                raise ValueError(
+                    f"Template '{self.template_id}' references unknown prompt modules: "
+                    f"{unknown}. Known modules: {sorted(PROMPT_MODULES.keys())}"
+                )
 
 
 BUYER_PERFORMANCE_REPORT_V1 = SavedReportTemplate(
@@ -115,11 +131,22 @@ BUYER_PERFORMANCE_REPORT_V1 = SavedReportTemplate(
         "Ava may rephrase wording inside a section; she must not add, remove, or reorder sections.",
         "If a data block did not run, the executor leaves that section empty or marks it skipped—Ava must not fabricate numbers.",
     ),
+    prompt_modules=(
+        "executive_summary",
+        "kpi_narrative",
+        "highlights",
+        "notes",
+    ),
 )
 
 SAVED_REPORT_TEMPLATES: Dict[str, SavedReportTemplate] = {
     BUYER_PERFORMANCE_REPORT_V1.template_id: BUYER_PERFORMANCE_REPORT_V1,
 }
+
+# Allow JSON template docs to override built-in Python templates.
+_json_templates = load_template_docs_from_dir(resolve_templates_dir())
+if _json_templates:
+    SAVED_REPORT_TEMPLATES.update(_json_templates)
 
 
 def get_template(template_id: str) -> SavedReportTemplate:

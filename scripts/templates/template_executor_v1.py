@@ -11,9 +11,15 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ava_phraser_v1 import get_combined_payload, run_phrasing_for_final_response
+from prompt_assembler_v1 import (
+    ASSEMBLER_VERSION,
+    SAVED_REPORT_MODULE_SELECTION,
+    build_saved_report_prompt_payload,
+)
+from prompt_modules_v1 import PROMPT_MODULES, module_summary
 from report_normalizer_v2 import BlockOutput, normalize_saved_report_v2
 from structured_report_v1 import build_structured_report
 
@@ -338,13 +344,56 @@ def execute_saved_report_plan(
         ),
     )
 
-    ph = run_phrasing_for_final_response(
-        final_response,
-        use_ava=use_ava,
-        strict_validation=strict_validation,
-        thread_id=thread_id,
-        app_user_id=app_user_id,
+    block_outputs_serialized = [
+        {
+            "block_id": bo.block_id,
+            "block_type": bo.block_type,
+            "output_key": bo.output_key,
+            "source": bo.source,
+            "payload": bo.payload,
+        }
+        for bo in block_outputs
+    ]
+
+    buyer_label = f"Buyer {buyer_id}"
+
+    template_module_ids = tuple(
+        mid for mid in (plan.get("prompt_modules") or []) if isinstance(mid, str) and mid.strip()
     )
+    unknown_modules = [mid for mid in template_module_ids if mid not in PROMPT_MODULES]
+    resolved_module_ids: Tuple[str, ...]
+    if template_module_ids and not unknown_modules:
+        resolved_module_ids = template_module_ids
+        module_selection_source = "template"
+    else:
+        resolved_module_ids = SAVED_REPORT_MODULE_SELECTION
+        module_selection_source = "default_fallback" if template_module_ids else "default"
+
+    assembled_prompt_payload = build_saved_report_prompt_payload(
+        final_response=final_response,
+        block_outputs=block_outputs_serialized,
+        buyer_label=buyer_label,
+        period_label=period_label,
+        module_ids=resolved_module_ids,
+    )
+
+    final_response["_assembly_inputs"] = {
+        "buyer_label": buyer_label,
+        "period_label": period_label,
+        "block_outputs": block_outputs_serialized,
+        "module_ids": list(resolved_module_ids),
+    }
+
+    try:
+        ph = run_phrasing_for_final_response(
+            final_response,
+            use_ava=use_ava,
+            strict_validation=strict_validation,
+            thread_id=thread_id,
+            app_user_id=app_user_id,
+        )
+    finally:
+        final_response.pop("_assembly_inputs", None)
 
     return {
         "saved_report_runtime_version": SAVED_REPORT_RUNTIME_VERSION,
@@ -353,16 +402,16 @@ def execute_saved_report_plan(
         "final_response": final_response,
         "structured_report": build_structured_report(final_response),
         "template_block_runs": block_runs,
-        "template_block_outputs_v2": [
-            {
-                "block_id": bo.block_id,
-                "block_type": bo.block_type,
-                "output_key": bo.output_key,
-                "source": bo.source,
-                "payload": bo.payload,
-            }
-            for bo in block_outputs
-        ],
+        "template_block_outputs_v2": block_outputs_serialized,
+        "prompt_modules": {
+            "assembler_version": ASSEMBLER_VERSION,
+            "modules_used": list(resolved_module_ids),
+            "modules_referenced_by_template": list(template_module_ids),
+            "module_selection_source": module_selection_source,
+            "unknown_modules_in_template": unknown_modules,
+            "module_versions": module_summary(),
+            "assembled_payload": assembled_prompt_payload,
+        },
         "phrasing": {
             "mode": ph["mode"],
             "text": ph["text"],
