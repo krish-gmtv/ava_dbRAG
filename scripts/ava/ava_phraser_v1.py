@@ -51,14 +51,51 @@ def deterministic_phrase(final_response: Dict[str, Any]) -> str:
         highlights = final_response.get("highlights") or []
         notes = final_response.get("notes") or []
         next_q = final_response.get("suggested_next_question", "")
+        def _kpi_narrative_line(snapshot: Any) -> str:
+            if not isinstance(snapshot, dict) or not snapshot:
+                return ""
+            # Prefer listing-style counter when present.
+            if "row_count" in snapshot:
+                return f"KPI narrative: Row count is {snapshot.get('row_count')} for the requested window."
+            # Prefer core totals when present.
+            for key in ("total_leads", "total_upsheets", "total_opportunities"):
+                if key in snapshot:
+                    tl = snapshot.get("total_leads")
+                    tu = snapshot.get("total_upsheets")
+                    to = snapshot.get("total_opportunities")
+                    return (
+                        "KPI narrative: "
+                        f"Totals — leads: {tl}, upsheets: {tu}, opportunities: {to}."
+                    )
+            # Fallback: mention that KPI snapshot is present.
+            return "KPI narrative: KPI snapshot is available for this period."
+
         lines = [request_summary, "", "Executive summary", executive_summary]
         lines.extend(["", "KPI snapshot"])
+        kpi_line = _kpi_narrative_line(kpi_snapshot)
+        if kpi_line:
+            lines.append(kpi_line)
         if isinstance(kpi_snapshot, dict) and kpi_snapshot:
             for k, v in kpi_snapshot.items():
                 label = str(k).replace("_", " ").title()
                 lines.append(f"- {label}: {v}")
         else:
             lines.append("- (No KPI metrics narrative for this run.)")
+        # Optional row preview tables (if present)
+        rpt = final_response.get("row_preview_tables") or []
+        if isinstance(rpt, list) and rpt:
+            for t in rpt:
+                if not isinstance(t, dict):
+                    continue
+                title = str(t.get("title") or t.get("block_id") or "Row preview").strip()
+                rows = t.get("rows") or []
+                if not isinstance(rows, list) or not rows:
+                    continue
+                lines.append("")
+                lines.append(title)
+                for r in rows[:3]:
+                    if isinstance(r, dict):
+                        lines.append(f"- {r}")
         if highlights:
             lines.append("")
             lines.append("Highlights:")

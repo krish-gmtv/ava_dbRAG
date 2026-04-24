@@ -6,9 +6,8 @@ import unittest
 
 from saved_report_templates_v1 import (
     BUYER_PERFORMANCE_REPORT_V1,
-    DataBlockSpec,
-    SavedReportTemplate,
 )
+from template_schema_v1 import DataBlockSpec, SavedReportTemplate
 from template_report_orchestrator_v1 import plan_saved_report
 
 

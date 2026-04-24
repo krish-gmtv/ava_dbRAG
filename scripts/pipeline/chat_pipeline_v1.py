@@ -11,7 +11,10 @@ import re
 from http import HTTPStatus
 from typing import Any, Callable, Dict, Optional
 
+from saved_report_flow_v1 import try_handle_saved_report_request
 
+
+# Keep a local timeout detector for legacy pipeline execution.
 TimeoutRegex = re.compile(
     r"(read\s+timed\s+out|timed\s+out\s+after\s+retry|timed\s+out|timeout|etimedout|readtimeout|connect\s+timeout)",
     flags=re.IGNORECASE,
@@ -84,75 +87,24 @@ def process_chat_request(
                     thread_ctx["pending_listing_followup"] = False
                     thread_ctx["pending_trend_followup"] = False
 
-    saved_plan = plan_saved_report(rewritten_query)
-    if saved_plan is not None:
-        if not saved_plan.get("ready_to_execute"):
-            clar = saved_report_clarification_response(
-                query=query,
-                executed_query=rewritten_query,
-                thread_id=thread_id,
-                app_user_id=app_user_id,
-                plan=saved_plan,
-            )
-            attach_structured_payload(clar, developer_mode)
-            return clar
-
-        try:
-            pipeline_output = execute_saved_report_plan(
-                rewritten_query,
-                saved_plan,
-                use_ava=use_ava,
-                strict_validation=strict_validation,
-                thread_id=thread_id,
-                app_user_id=app_user_id,
-                force_precise=force_precise,
-            )
-        except Exception as exc:
-            err_text = str(exc)
-            #In case it takes too long to work through the saved report execution, we want to return a fallback response instead of an error.
-            if TimeoutRegex.search(err_text):
-                fb = temporary_service_fallback_response(
-                    query=query,
-                    thread_id=thread_id,
-                    app_user_id=app_user_id,
-                )
-                attach_structured_payload(fb, developer_mode)
-                return fb
-            return {
-                "error": "Saved report execution failed",
-                "details": str(exc),
-                "_http_status": int(HTTPStatus.INTERNAL_SERVER_ERROR),
-            }
-
-        update_thread_ctx(thread_id, pipeline_output)
-        phrasing = (
-            (pipeline_output.get("phrasing") or {}) if isinstance(pipeline_output, dict) else {}
-        )
-        final_response = (
-            (pipeline_output.get("final_response") or {})
-            if isinstance(pipeline_output, dict)
-            else {}
-        )
-        execution_plan = (
-            (pipeline_output.get("execution_plan") or {})
-            if isinstance(pipeline_output, dict)
-            else {}
-        )
-        response = {
-            "query": query,
-            "executed_query": rewritten_query,
-            "thread_id": thread_id,
-            "app_user_id": app_user_id,
-            "display_text": phrasing.get("text", ""),
-            "phrasing_mode": phrasing.get("mode", "unknown"),
-            "source_mode": final_response.get("mode", "unknown"),
-            "selected_handler": pipeline_output.get("selected_handler"),
-            "report_template_id": execution_plan.get("report_template_id"),
-            "force_precise": force_precise,
-            "raw": pipeline_output,
-        }
-        attach_structured_payload(response, developer_mode)
-        return response
+    sr = try_handle_saved_report_request(
+        query=query,
+        rewritten_query=rewritten_query,
+        use_ava=use_ava,
+        strict_validation=strict_validation,
+        force_precise=force_precise,
+        developer_mode=developer_mode,
+        thread_id=thread_id,
+        app_user_id=app_user_id,
+        attach_structured_payload=attach_structured_payload,
+        update_thread_ctx=update_thread_ctx,
+        saved_report_clarification_response=saved_report_clarification_response,
+        temporary_service_fallback_response=temporary_service_fallback_response,
+        plan_saved_report=plan_saved_report,
+        execute_saved_report_plan=execute_saved_report_plan,
+    )
+    if sr is not None:
+        return sr
 #Off topic drift check and fallback to guardrail response if needed. This is the last check before running the potentially expensive pipeline execution.
     if should_guardrail_query(rewritten_query):
         mode = "greeting" if is_greeting(query) else "offtopic"

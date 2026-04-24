@@ -245,6 +245,72 @@ class TemplateExecutorMergeTests(unittest.TestCase):
             ["executive_summary", "kpi_narrative", "highlights", "notes"],
         )
 
+    def test_execute_listing_only_template_does_not_require_narrative(self) -> None:
+        plan = {
+            "template_id": "buyer_upsheets_listing_report_v1",
+            "display_name": "Buyer upsheets listing",
+            "section_order": ["request_summary", "kpi_snapshot", "notes", "next_steps"],
+            "prompt_modules": ["kpi_narrative", "notes"],
+            "slots": {
+                "buyer_id": 2,
+                "timeframe": {
+                    "raw_text": "Q2 2021",
+                    "start": "2021-04-01",
+                    "end": "2021-06-30",
+                },
+            },
+            "data_blocks": [
+                {
+                    "block_id": "row_listing_upsheets",
+                    "block_type": "row_listing",
+                    "output_key": "kpi_snapshot",
+                    "status": "selected",
+                }
+            ],
+        }
+
+        def side_effect(_ij: str, q: str, force_precise: bool = False) -> dict:
+            # Ensure it tries to call the listing query path.
+            if "List all upsheets" in q or "upsheets" in q.lower():
+                return {
+                    "execution_plan": {
+                        "entity": {"resolved_id": 2},
+                        "timeframe": {"raw_text": "Q2 2021"},
+                        "retrieval_plan": {"query_family": "list_buyer_upsheets"},
+                        "mode": "precise",
+                    },
+                    "selected_handler": "precise_list_buyer_upsheets",
+                    "final_response": {
+                        "mode": "precise",
+                        "kpi_snapshot": {"row_count": 3},
+                        "data_coverage_notes": ["Source database: ava_sandboxV2"],
+                        "suggested_next_question": "Want performance report?",
+                    },
+                }
+            raise AssertionError(f"unexpected query: {q}")
+
+        with patch.object(te, "get_combined_payload", side_effect=side_effect):
+            with patch.object(te, "run_phrasing_for_final_response") as ph:
+                ph.return_value = {
+                    "mode": "deterministic",
+                    "text": "x",
+                    "validation": {"is_valid": True},
+                    "error": None,
+                }
+                out = te.execute_saved_report_plan(
+                    "list upsheets for Buyer 2 in Q2 2021",
+                    plan,
+                )
+
+        fr = out["final_response"]
+        self.assertEqual(fr["mode"], "saved_report")
+        self.assertEqual(fr["template_id"], "buyer_upsheets_listing_report_v1")
+        self.assertEqual(fr["kpi_snapshot"].get("row_count"), 3)
+        pm = out.get("prompt_modules") or {}
+        self.assertEqual(pm.get("modules_used"), ["kpi_narrative", "notes"])
+        # listing-only template should not require semantic_quality
+        self.assertTrue(fr.get("semantic_quality") is None or isinstance(fr.get("semantic_quality"), dict))
+
 
 if __name__ == "__main__":
     unittest.main()

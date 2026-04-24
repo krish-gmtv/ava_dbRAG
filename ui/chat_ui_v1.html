@@ -115,6 +115,14 @@
       background: #f3f4f6;
       font-weight: 600;
     }
+    .download-btn {
+      background: #111827;
+      margin-left: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 8px;
+    }
+    .download-btn:hover { background: #0b1220; }
     ul.report-list {
       margin: 6px 0 0 18px;
       padding: 0;
@@ -251,10 +259,41 @@
         .replace(/"/g, "&quot;");
     }
 
+    function cssEscape(s) {
+      // Minimal escape for attribute selectors.
+      return String(s || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+
     function formatMetricKey(key) {
       return String(key || "")
         .replace(/_/g, " ")
         .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function toCsvValue(v) {
+      const s = String(v ?? "");
+      if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+        return `"${s.replaceAll('"', '""')}"`;
+      }
+      return s;
+    }
+
+    function downloadCsv(filename, columns, rows) {
+      const header = columns.map(toCsvValue).join(",");
+      const lines = [header];
+      for (const r of rows) {
+        lines.push((r || []).map(toCsvValue).join(","));
+      }
+      const csv = lines.join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
     }
 
     function renderStructuredReport(sr, developerPayload, showDev) {
@@ -291,12 +330,41 @@
         if (sec.executive_summary) {
           parts.push(`<div class="report-section"><h3>Executive summary</h3><p>${escapeHtml(sec.executive_summary)}</p></div>`);
         }
+        if (sec.kpi_narrative) {
+          parts.push(`<div class="report-section"><h3>KPI narrative</h3><p>${escapeHtml(sec.kpi_narrative)}</p></div>`);
+        }
         if (Array.isArray(sec.kpi_table) && sec.kpi_table.length) {
           parts.push('<div class="report-section"><h3>KPI snapshot</h3><table class="kpi-table"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>');
           for (const row of sec.kpi_table) {
             parts.push(`<tr><td>${escapeHtml(formatMetricKey(row.metric_key))}</td><td>${escapeHtml(row.value)}</td></tr>`);
           }
           parts.push("</tbody></table></div>");
+        }
+        if (Array.isArray(sec.row_preview_tables) && sec.row_preview_tables.length) {
+          for (const t of sec.row_preview_tables) {
+            const title = (t && t.title) ? String(t.title) : "Row preview";
+            const table = (t && t.table) ? t.table : {};
+            const cols = Array.isArray(table.columns) ? table.columns : [];
+            const rows = Array.isArray(table.rows) ? table.rows : [];
+            if (!cols.length) continue;
+            const csvId = `csv-${Math.random().toString(36).slice(2, 10)}`;
+            const fileSafeTitle = title.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") || "rows";
+            parts.push(`<div class="report-section">`);
+            parts.push(`<h3>${escapeHtml(title)} <button class="download-btn" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}">Download CSV</button></h3>`);
+            parts.push(`<table class="kpi-table" data-csv-id="${csvId}" data-cols="${escapeHtml(JSON.stringify(cols))}" data-rows="${escapeHtml(JSON.stringify(rows))}"><thead><tr>`);
+            for (const c of cols) {
+              parts.push(`<th>${escapeHtml(formatMetricKey(c))}</th>`);
+            }
+            parts.push('</tr></thead><tbody>');
+            for (const r of rows) {
+              parts.push('<tr>');
+              for (const cell of r) {
+                parts.push(`<td>${escapeHtml(cell)}</td>`);
+              }
+              parts.push('</tr>');
+            }
+            parts.push("</tbody></table></div>");
+          }
         }
         if (Array.isArray(sec.highlights) && sec.highlights.length) {
           parts.push('<div class="report-section"><h3>Highlights</h3><ul class="report-list">');
@@ -494,6 +562,20 @@
           showDev
         );
         const botDiv = appendBotReportHtml(reportHtml, footerMeta);
+        // Attach CSV download handlers for any preview tables in this bot message.
+        botDiv.querySelectorAll("button.download-btn").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const csvId = btn.getAttribute("data-csv-id") || "";
+            const title = btn.getAttribute("data-csv-title") || "rows";
+            const table = botDiv.querySelector(`table[data-csv-id='${cssEscape(csvId)}']`);
+            if (!table) return;
+            const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
+            const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
+            const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "report";
+            const fn = `${tpl}_${title}.csv`;
+            downloadCsv(fn, cols, rows);
+          });
+        });
         if (!showDev && data.phrasing_mode === "deterministic_fallback") {
           const note = document.createElement("div");
           note.className = "phrasing-fallback-note";

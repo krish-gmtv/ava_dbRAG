@@ -28,6 +28,40 @@ def _snapshot_to_rows(snapshot: Dict[str, Any]) -> List[Dict[str, str]]:
     return rows
 
 
+def _rows_to_table(rows: Any) -> Dict[str, Any]:
+    """
+    Convert list-of-dicts into a simple table contract:
+      { columns: [...], rows: [[...], ...] }
+    """
+    if not isinstance(rows, list) or not rows:
+        return {"columns": [], "rows": []}
+    dict_rows = [r for r in rows if isinstance(r, dict)]
+    if not dict_rows:
+        return {"columns": [], "rows": []}
+    # Deterministic column order: keys from first row, then any new keys alphabetically.
+    first_keys = list(dict_rows[0].keys())
+    extra_keys = sorted({k for r in dict_rows[1:] for k in r.keys()} - set(first_keys))
+    cols = [str(k) for k in first_keys] + [str(k) for k in extra_keys]
+    out_rows: List[List[str]] = []
+    for r in dict_rows[:25]:
+        out_rows.append([_str(r.get(c)) for c in cols])
+    return {"columns": cols, "rows": out_rows}
+
+
+def _preview_tables_to_sections(x: Any) -> List[Dict[str, Any]]:
+    if not isinstance(x, list) or not x:
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in x:
+        if not isinstance(item, dict):
+            continue
+        title = _str(item.get("title")) or _str(item.get("block_id")) or "Row preview"
+        table = _rows_to_table(item.get("rows"))
+        if table.get("columns"):
+            out.append({"title": title, "table": table})
+    return out
+
+
 def build_structured_report(final_response: Dict[str, Any]) -> Dict[str, Any]:
     """
     Map renderer ``final_response`` into a stable report contract for the UI.
@@ -76,6 +110,8 @@ def build_structured_report(final_response: Dict[str, Any]) -> Dict[str, Any]:
         ks = final_response.get("kpi_snapshot") or {}
         if not isinstance(ks, dict):
             ks = {}
+        kpi_narr = _optional_str(final_response, "kpi_narrative")
+        row_preview_tables = _preview_tables_to_sections(final_response.get("row_preview_tables"))
         highlights = final_response.get("highlights") or []
         hl_list = [str(h) for h in highlights if _str(h)]
         notes = final_response.get("notes") or []
@@ -86,7 +122,9 @@ def build_structured_report(final_response: Dict[str, Any]) -> Dict[str, Any]:
             "sections": {
                 "request_summary": _optional_str(final_response, "request_summary"),
                 "executive_summary": _optional_str(final_response, "executive_summary"),
+                "kpi_narrative": kpi_narr,
                 "kpi_table": _snapshot_to_rows(ks),
+                "row_preview_tables": row_preview_tables,
                 "highlights": hl_list,
                 "notes": note_list,
                 "suggested_next_question": _optional_str(

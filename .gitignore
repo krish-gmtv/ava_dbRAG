@@ -1,4 +1,19 @@
 .env
+.env.*
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+
+# Editor / OS
 .vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Local runtime caches / logs (not source)
+logs/
+.ava_session_cache.json
+scripts/.ava_session_cache.json

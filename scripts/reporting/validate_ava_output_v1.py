@@ -167,6 +167,13 @@ def validate_ava_output(
             for h in ("executive summary", "kpi snapshot"):
                 if h not in lower_text:
                     errors.append(f"Missing required heading '{h.title()}' for saved report mode.")
+            # Enforce KPI narrative line when KPIs exist (governed kpi_narrative module).
+            kpi_snapshot = final_response.get("kpi_snapshot") or {}
+            if isinstance(kpi_snapshot, dict) and kpi_snapshot:
+                if "kpi narrative" not in lower_text:
+                    errors.append(
+                        "Missing KPI narrative line in saved report output (expected 'KPI narrative:' when kpi_snapshot is present)."
+                    )
         elif mode == "semantic":
             if "next:" not in lower_text:
                 errors.append("Missing required heading 'Next:' for semantic mode.")
@@ -182,6 +189,15 @@ def validate_ava_output(
                 errors.append("Unexpected heading 'Key results:' in semantic mode output.")
             if "notes:" in heading_positions:
                 errors.append("Unexpected heading 'Notes:' in semantic mode output.")
+
+    # Non-strict guidance: encourage KPI narrative line when KPIs exist.
+    if mode == "saved_report":
+        kpi_snapshot = final_response.get("kpi_snapshot") or {}
+        if isinstance(kpi_snapshot, dict) and kpi_snapshot:
+            if "kpi narrative" not in lower_text:
+                warnings.append(
+                    "Saved report output missing KPI narrative line (consider enabling strict validation)."
+                )
 
     return {"is_valid": len(errors) == 0, "errors": errors, "warnings": warnings}
 

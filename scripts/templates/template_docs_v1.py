@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from prompt_modules_v1 import PROMPT_MODULES
-from saved_report_templates_v1 import DataBlockSpec, SavedReportTemplate
+from template_schema_v1 import DataBlockSpec, SavedReportTemplate
 
 
 TEMPLATE_DOC_VERSION_V1 = "saved_report_template_doc_v1"
@@ -135,6 +135,11 @@ def validate_template_doc_v1(doc: Dict[str, Any]) -> None:
                 pass
             else:
                 _as_str_tuple(rr, field=f"data_blocks[{i}].runtime_rules")
+
+        # Require unique output_key per block_type for now to avoid collisions in rendering.
+        # (Multiple row_listing blocks will still render via row_preview_tables.)
+        if str(b.get("block_type") or "").strip() == "row_listing":
+            pass
 
 
 def template_from_doc_v1(doc: Dict[str, Any]) -> SavedReportTemplate:

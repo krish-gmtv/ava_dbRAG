@@ -41,6 +41,7 @@ def normalize_saved_report_v2(
     highlights: List[str] = []
     notes: List[str] = []
     kpi_snapshot: Dict[str, Any] = {}
+    row_preview_tables: List[Dict[str, Any]] = []
 
     for bo in block_outputs:
         if bo.block_type == "executive_summary":
@@ -72,6 +73,17 @@ def normalize_saved_report_v2(
             if isinstance(snap, dict):
                 for k, v in snap.items():
                     kpi_snapshot[str(k)] = v
+            rp = bo.payload.get("rows_preview") or []
+            if isinstance(rp, list) and rp:
+                cleaned = [r for r in rp if isinstance(r, dict)][:25]
+                if cleaned:
+                    row_preview_tables.append(
+                        {
+                            "block_id": bo.block_id,
+                            "title": bo.block_id.replace("_", " ").strip(),
+                            "rows": cleaned,
+                        }
+                    )
             for n in (bo.payload.get("notes") or []):
                 s = str(n).strip()
                 if s:
@@ -123,6 +135,19 @@ def normalize_saved_report_v2(
             )
             notes = _dedupe(notes)
 
+    def _kpi_narrative(snapshot: Dict[str, Any]) -> str:
+        if not isinstance(snapshot, dict) or not snapshot:
+            return ""
+        if "row_count" in snapshot:
+            return f"Row count is {snapshot.get('row_count')} for the requested window."
+        if all(k in snapshot for k in ("total_leads", "total_upsheets", "total_opportunities")):
+            return (
+                f"Totals — leads: {snapshot.get('total_leads')}, "
+                f"upsheets: {snapshot.get('total_upsheets')}, "
+                f"opportunities: {snapshot.get('total_opportunities')}."
+            )
+        return ""
+
     final_response: Dict[str, Any] = {
         "mode": "saved_report",
         "template_id": template_id,
@@ -131,7 +156,9 @@ def normalize_saved_report_v2(
             f"Original request: {user_query.strip()}"
         ),
         "executive_summary": "\n\n".join(exec_summary_parts).strip(),
+        "kpi_narrative": _kpi_narrative(kpi_snapshot),
         "kpi_snapshot": kpi_snapshot,
+        "row_preview_tables": row_preview_tables,
         "highlights": highlights,
         "notes": notes,
         "suggested_next_question": suggested_next_question.strip(),

@@ -63,7 +63,13 @@ def plan_saved_report(user_query: str) -> Optional[Dict[str, Any]]:
         # Routing convergence: if the user clearly asks a buyer-quarter performance question,
         # prefer the saved-report template even without explicit "report" phrasing.
         ql = q.lower()
-        wants_performance = ("perform" in ql) or ("performance" in ql)
+        # Be tolerant to common misspellings and phrasing.
+        wants_performance = (
+            ("perform" in ql)
+            or ("performance" in ql)
+            or ("perfomance" in ql)  # common typo: missing 'r'
+            or ("performance summary" in ql)
+        )
         buyer_id = parse_buyer_id(q)
         tf = parse_timeframe(q) or {}
         has_period = bool(tf.get("raw_text") or tf.get("start") or tf.get("end"))

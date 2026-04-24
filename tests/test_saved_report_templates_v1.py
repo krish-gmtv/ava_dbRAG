@@ -12,6 +12,10 @@ class TemplateMatcherTests(unittest.TestCase):
         # "buyer performance report" should beat shorter "buyer report" in scoring
         tid = m.match_saved_report_template("I need a buyer performance report for B2")
         self.assertEqual(tid, "buyer_performance_report_v1")
+    
+    def test_match_upsheets_listing_template(self) -> None:
+        tid = m.match_saved_report_template("Please list upsheets for Buyer 5 in Q2 2021")
+        self.assertEqual(tid, "buyer_upsheets_listing_report_v1")
 
     def test_no_match_empty_or_irrelevant(self) -> None:
         self.assertIsNone(m.match_saved_report_template(""))
@@ -56,6 +60,12 @@ class TemplateOrchestratorTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         assert plan is not None
         self.assertEqual(plan["template_id"], "buyer_performance_report_v1")
+    
+    def test_match_performance_typo_perfomance(self) -> None:
+        plan = orch.plan_saved_report("what was the buyer perfomance of buyer 119 in Q2 2021?")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["template_id"], "buyer_performance_report_v1")
 
     def test_match_and_slots(self) -> None:
         q = "I want a buyer performance report on Buyer 2 for Q1 2019"
@@ -66,6 +76,27 @@ class TemplateOrchestratorTests(unittest.TestCase):
         self.assertEqual(plan["slots"]["buyer_id"], 2)
         self.assertEqual(plan["slots"]["timeframe"]["granularity"], "quarter")
         self.assertIn("2019", plan["slots"]["timeframe"]["raw_text"])
+        self.assertEqual(plan["missing_required_slots"], [])
+        self.assertTrue(plan["ready_to_execute"])
+
+    def test_upsheets_listing_template_requires_timeframe(self) -> None:
+        q = "list upsheets for Buyer 2"
+        plan = orch.plan_saved_report(q)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["template_id"], "buyer_upsheets_listing_report_v1")
+        # timeframe is required for this template
+        self.assertIn("timeframe", plan["missing_required_slots"])
+        self.assertFalse(plan["ready_to_execute"])
+
+    def test_upsheets_listing_template_ready(self) -> None:
+        q = "list upsheets for Buyer 2 in Q2 2021"
+        plan = orch.plan_saved_report(q)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["template_id"], "buyer_upsheets_listing_report_v1")
+        self.assertEqual(plan["slots"]["buyer_id"], 2)
+        self.assertEqual(plan["slots"]["timeframe"]["granularity"], "quarter")
         self.assertEqual(plan["missing_required_slots"], [])
         self.assertTrue(plan["ready_to_execute"])
 

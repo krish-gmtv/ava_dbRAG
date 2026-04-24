@@ -73,11 +73,22 @@ def build_typed_payload(
     highlights_payload = _find_block_payload(block_outputs, "highlights") or {}
     notes_payload = _find_block_payload(block_outputs, "notes") or {}
     kpi_payload = _find_block_payload(block_outputs, "kpi_table") or {}
+    row_payload = _find_block_payload(block_outputs, "row_listing") or {}
 
     kpi_snapshot = {}
     snap = kpi_payload.get("snapshot") if isinstance(kpi_payload, dict) else {}
     if isinstance(snap, dict):
         kpi_snapshot = {str(k): v for k, v in snap.items()}
+
+    # Listing-only templates may only have row_listing output with KPI-ish counters (e.g. row_count).
+    row_snap = row_payload.get("kpi_snapshot") if isinstance(row_payload, dict) else {}
+    if isinstance(row_snap, dict) and row_snap:
+        for k, v in row_snap.items():
+            kpi_snapshot.setdefault(str(k), v)
+
+    notes_items = _stringify_items(notes_payload.get("items"))
+    # Row listings often carry provenance notes (source db, “do not invent numbers”).
+    notes_items.extend(_stringify_items(row_payload.get("notes")))
 
     return {
         "buyer_label": str(buyer_label or "").strip(),
@@ -86,7 +97,7 @@ def build_typed_payload(
         "request_summary": str(final_response.get("request_summary") or "").strip(),
         "executive_summary_snippet": str(exec_payload.get("text") or "").strip(),
         "highlights_items": _stringify_items(highlights_payload.get("items")),
-        "notes_items": _stringify_items(notes_payload.get("items")),
+        "notes_items": notes_items,
         "kpi_snapshot": kpi_snapshot,
         "semantic_quality": final_response.get("semantic_quality") or None,
     }
@@ -186,7 +197,9 @@ def build_saved_report_ws_message(
         "Visible output contract (saved_report):",
         "- Opening request summary line (no heading required)",
         "- 'Executive summary' section (module: executive_summary)",
-        "- 'KPI snapshot' section (module: kpi_narrative + bullet list from data.kpi_snapshot)",
+        "- 'KPI snapshot' section:",
+        "  - Start with 1–2 sentences of KPI narrative (module: kpi_narrative) using only data.kpi_snapshot",
+        "  - Then list KPI fields as bullets or a table derived from data.kpi_snapshot",
         "- 'Highlights' section (module: highlights)",
         "- 'Notes' section (module: notes)",
         "- 'Next:' section",

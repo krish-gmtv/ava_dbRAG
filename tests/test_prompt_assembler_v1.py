@@ -171,3 +171,29 @@ def test_empty_block_outputs_still_produce_valid_payload():
         "highlights": "v1",
         "notes": "v1",
     }
+
+
+def test_row_listing_populates_kpi_snapshot_and_notes_items():
+    fr = _sample_final_response()
+    bos = [
+        {
+            "block_id": "row_listing_upsheets",
+            "block_type": "row_listing",
+            "output_key": "kpi_snapshot",
+            "source": "precise",
+            "payload": {
+                "kpi_snapshot": {"row_count": 1},
+                "notes": ["Source database: ava_sandboxV2"],
+            },
+        }
+    ]
+    payload = build_saved_report_prompt_payload(
+        final_response=fr,
+        block_outputs=bos,
+        buyer_label="Buyer 119",
+        period_label="Q2 2021",
+        module_ids=("kpi_narrative", "notes"),
+    )
+    data = payload["data"]
+    assert data["kpi_snapshot"] == {"row_count": 1}
+    assert "Source database: ava_sandboxV2" in data["notes_items"]

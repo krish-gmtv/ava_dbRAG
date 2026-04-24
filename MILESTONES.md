@@ -86,27 +86,39 @@ Use **Developer diagnostics**:
 
 ---
 
+### M5 — Routing convergence (buyer+period performance → saved_report)
+
+- [x] Buyer+quarter performance questions prefer `buyer_performance_report_v1` even without “report” wording.
+- [x] Tolerant matching for common typo `perfomance`.
+- [x] Tests updated/added in `tests/test_saved_report_templates_v1.py`.
+
+**Why it matters:** Prevents “KPIs disappeared” confusion by keeping performance questions on the saved-report contract.
+
+---
+
+### M6 — Additional prompt module: `kpi_narrative@v1`
+
+- [x] Added governed module `kpi_narrative@v1` (1–2 sentence KPI explanation from precise `kpi_snapshot` only).
+- [x] Included in `buyer_performance_report_v1.prompt_modules` and default module selection.
+- [x] Tests updated (`tests/test_prompt_assembler_v1.py`, executor tests).
+
+**Why it matters:** Makes KPI tables explainable without inventing numbers.
+
+---
+
+### M8 — Template-as-data (JSON) + validation + loader
+
+- [x] JSON template doc contract v1 + strict validation (`scripts/templates/template_docs_v1.py`).
+- [x] Neutral schema split to avoid circular imports (`scripts/templates/template_schema_v1.py`).
+- [x] Registry supports JSON override with Python fallback (`scripts/templates/saved_report_templates_v1.py`).
+- [x] Bootstrapped JSON template: `templates/saved_reports/buyer_performance_report_v1.json`.
+- [x] Tests added (`tests/test_template_docs_v1.py`).
+
+**Why it matters:** This is the persistence contract the future drag/drop editor will save.
+
+---
+
 ## Forward roadmap (checklist)
-
-### M5 — Routing convergence (recommended next)
-
-**Goal:** Buyer + quarter “performance” style questions **prefer** `buyer_performance_report_v1` so users do not accidentally land in legacy **`semantic`** without the saved-report KPI table.
-
-- [ ] Define clear match rules (e.g. buyer id resolved + quarter + performance intent) vs explicit “report” wording only.
-- [ ] Wire in `chat_pipeline_v1` / matcher without breaking listing-only or off-topic queries.
-- [ ] Tests: same buyer/quarter via “report” vs “how did X perform” → both `saved_report` when intended.
-- [ ] Document the behavior in this file after implementation.
-
----
-
-### M6 — Additional prompt modules (product-visible phrasing)
-
-- [ ] `kpi_narrative@v1`: short prose **only** from `kpi_snapshot` + allowed labels (no new numbers).
-- [ ] Optional: `next_steps@v1` governed follow-up copy.
-- [ ] Extend assembler + template `prompt_modules` for `buyer_performance_report_v1` as needed.
-- [ ] Tests: assembler includes new module; Ava message contract stable.
-
----
 
 ### M7 — Second saved template (prove generalization)
 
@@ -117,11 +129,10 @@ Use **Developer diagnostics**:
 ---
 
 ### M8 — Template-as-data (editor / persistence contract)
-
-- [ ] Serialize template definition to **JSON** (or DB row) with schema validation.
-- [ ] Loader: JSON → same in-memory objects used today.
-- [ ] Version field on template document for migrations.
-- [ ] UI can later read/write this JSON without code changes.
+- [x] Serialize template definition to **JSON** (or DB row) with schema validation.
+- [x] Loader: JSON → same in-memory objects used today.
+- [x] Version field on template document for migrations.
+- [x] UI can later read/write this JSON without code changes.
 
 ---
 
@@ -172,5 +183,6 @@ Expect plan JSON to include **`prompt_modules`** and **`ready_to_execute: true`*
 | Date | Note |
 |------|------|
 | 2026-04-20 | Initial checklist: M1–M4 complete; M5–M10 forward roadmap. |
+| 2026-04-22 | Shipped M5 routing convergence, added `kpi_narrative@v1`, and delivered JSON template docs (M8) with schema split + tests. |
 
 Update this section when you ship a new milestone.

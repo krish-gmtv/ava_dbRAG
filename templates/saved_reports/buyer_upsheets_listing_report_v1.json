@@ -1,0 +1,53 @@
+{
+  "template_doc_version": "saved_report_template_doc_v1",
+  "template_id": "buyer_upsheets_listing_report_v1",
+  "display_name": "Buyer upsheets listing",
+  "purpose": "Manager-facing upsheet listing report for a buyer and period (precise rows).",
+  "trigger_phrases": [
+    "upsheets report",
+    "upsheet report",
+    "upsheets listing",
+    "list upsheets",
+    "buyer upsheets"
+  ],
+  "required_slots": ["buyer", "timeframe"],
+  "optional_slots": [],
+  "section_order": [
+    "request_summary",
+    "kpi_snapshot",
+    "notes",
+    "next_steps"
+  ],
+  "phrasing_rules": [
+    "Keep the same section order and headings as the template on every run.",
+    "Ava may rephrase wording inside a section; she must not add, remove, or reorder sections.",
+    "If a data block did not run, the executor leaves that section empty or marks it skipped—Ava must not fabricate numbers."
+  ],
+  "prompt_modules": ["kpi_narrative", "notes"],
+  "disallowed_without_explicit_request": [],
+  "data_blocks": [
+    {
+      "block_id": "row_listing_upsheets",
+      "description": "Raw Postgres upsheet rows; precise listing path.",
+      "block_type": "row_listing",
+      "retrieval_mode": "precise",
+      "query_family_hint": "list_buyer_upsheets",
+      "output_key": "kpi_snapshot",
+      "source_mode": "precise",
+      "runtime_rules": [],
+      "requires_explicit_user_request": false
+    },
+    {
+      "block_id": "row_listing_opportunities",
+      "description": "Raw Postgres opportunity rows; precise listing path.",
+      "block_type": "row_listing",
+      "retrieval_mode": "precise",
+      "query_family_hint": "list_buyer_opportunities",
+      "output_key": "kpi_snapshot",
+      "source_mode": "precise",
+      "runtime_rules": [],
+      "requires_explicit_user_request": false
+    }
+  ]
+}
+

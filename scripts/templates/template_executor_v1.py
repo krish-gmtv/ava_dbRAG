@@ -53,6 +53,9 @@ def _block_queries(buyer_id: int, period_label: str) -> Dict[str, str]:
         "row_listing_upsheets": (
             f"List all upsheets for Buyer {buyer_id} in {period_label}?"
         ),
+        "row_listing_opportunities": (
+            f"List all opportunities for Buyer {buyer_id} in {period_label}?"
+        ),
     }
 
 
@@ -246,7 +249,9 @@ def execute_saved_report_plan(
         if bid not in queries:
             continue
         sub_q = queries[bid]
-        use_fp = bool(force_precise and bid == "row_listing_upsheets")
+        # Listing blocks must be deterministic and precise when the template declares it.
+        # Do not depend on router heuristics for listings.
+        use_fp = bool(force_precise) or (btype == "row_listing" and source_mode == "precise")
         rendered = get_combined_payload("", sub_q, force_precise=use_fp)
         fr = rendered.get("final_response") or {}
         ep = rendered.get("execution_plan") or {}
@@ -304,6 +309,13 @@ def execute_saved_report_plan(
         elif btype == "row_listing":
             listing_fr = fr
             snap = fr.get("kpi_snapshot") if isinstance(fr, dict) else {}
+            supporting = fr.get("supporting_details") if isinstance(fr, dict) else {}
+            first_preview = []
+            if isinstance(supporting, dict):
+                cand = supporting.get("first_rows_preview") or []
+                if isinstance(cand, list):
+                    # Keep preview small and deterministic.
+                    first_preview = cand[:25]
             block_outputs.append(
                 BlockOutput(
                     block_id=bid,
@@ -312,13 +324,14 @@ def execute_saved_report_plan(
                     source="precise" if (fr.get("mode") == "precise") else "unknown",
                     payload={
                         "kpi_snapshot": snap if isinstance(snap, dict) else {},
+                        "rows_preview": first_preview,
                         "notes": _merge_notes(fr),
                     },
                 )
             )
 
-    if not narrative_fr:
-        raise RuntimeError("Template executor produced no narrative block output.")
+    # Some templates are listing-only (no semantic narrative). Do not fail those runs.
+    # In that case, semantic_quality remains None and next-step copy falls back.
 
     merged_plan: Dict[str, Any] = {
         **base_ep,
@@ -328,6 +341,15 @@ def execute_saved_report_plan(
         "saved_report_runtime_version": SAVED_REPORT_RUNTIME_VERSION,
     }
 
+    sq_obj = (
+        narrative_fr.get("semantic_quality")
+        if isinstance(narrative_fr.get("semantic_quality"), dict)
+        else None
+    )
+    suggested_next = str(narrative_fr.get("suggested_next_question") or "").strip()
+    if not suggested_next and isinstance(listing_fr, dict):
+        suggested_next = str(listing_fr.get("suggested_next_question") or "").strip()
+
     final_response = normalize_saved_report_v2(
         user_query=user_query,
         template_id=str(plan.get("template_id") or ""),
@@ -336,12 +358,8 @@ def execute_saved_report_plan(
         period_label=period_label,
         section_order=list(plan.get("section_order") or []),
         block_outputs=block_outputs,
-        semantic_quality=narrative_fr.get("semantic_quality")
-        if isinstance(narrative_fr.get("semantic_quality"), dict)
-        else None,
-        suggested_next_question=(
-            str(narrative_fr.get("suggested_next_question") or "").strip() or _DEFAULT_NEXT
-        ),
+        semantic_quality=sq_obj,
+        suggested_next_question=suggested_next or _DEFAULT_NEXT,
     )
 
     block_outputs_serialized = [
