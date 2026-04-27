@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 from template_docs_v1 import load_template_docs_from_dir, resolve_templates_dir
-from template_schema_v1 import DataBlockSpec, SavedReportTemplate
+from scripts.templates.template_schema_v1 import DataBlockSpec, SavedReportTemplate
 
 
 BUYER_PERFORMANCE_REPORT_V1 = SavedReportTemplate(

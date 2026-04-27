@@ -11,16 +11,23 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlparse
 
-from structured_report_v1 import (
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(_SCRIPTS_DIR) not in sys.path:
+    # Allow importing scripts/_bootstrap_repo_root.py when running from scripts/server/.
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from _bootstrap_repo_root import ensure_repo_root_on_syspath  # noqa: E402
+
+ROOT_DIR = ensure_repo_root_on_syspath()
+
+from scripts.reporting.structured_report_v1 import (
     build_developer_diagnostics,
     build_structured_report,
     build_structured_report_from_ui_fallback,
 )
-from template_executor_v1 import execute_saved_report_plan
-from template_report_orchestrator_v1 import plan_saved_report
-from chat_pipeline_v1 import process_chat_request
+from scripts.templates.template_executor_v1 import execute_saved_report_plan
+from scripts.templates.template_report_orchestrator_v1 import plan_saved_report
+from scripts.pipeline.chat_pipeline_v1 import process_chat_request
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 UI_HTML_PATH = ROOT_DIR / "ui" / "chat_ui_v1.html"
 THREAD_CONTEXT: Dict[str, Dict[str, Any]] = {}

@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from validate_ava_output_v1 import validate_ava_output
 from ava_safe_phraser import safe_ws_phrase
-from structured_report_v1 import build_structured_report
+from scripts.reporting.structured_report_v1 import build_structured_report
 
 
 load_dotenv()

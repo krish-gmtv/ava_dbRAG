@@ -18,8 +18,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from prompt_modules_v1 import PROMPT_MODULES
-from template_schema_v1 import DataBlockSpec, SavedReportTemplate
+from scripts.ava.prompt_modules_v1 import PROMPT_MODULES
+from scripts.templates.template_schema_v1 import DataBlockSpec, SavedReportTemplate
 
 
 TEMPLATE_DOC_VERSION_V1 = "saved_report_template_doc_v1"

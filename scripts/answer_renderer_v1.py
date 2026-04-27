@@ -7,9 +7,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from _bootstrap_repo_root import ensure_repo_root_on_syspath
+
+ensure_repo_root_on_syspath()
+
 from intent_router_v1 import period_from_execution_plan
-from semantic_catalog_v1 import format_available_periods_line
-from semantic_quality_v1 import evaluate_semantic_quality
+from scripts.reporting.semantic_catalog_v1 import format_available_periods_line
+from scripts.reporting.semantic_quality_v1 import evaluate_semantic_quality
 
 
 logger = logging.getLogger(__name__)

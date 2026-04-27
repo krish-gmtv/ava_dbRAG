@@ -21,7 +21,7 @@ from prompt_assembler_v1 import (
 )
 from prompt_modules_v1 import PROMPT_MODULES, module_summary
 from report_normalizer_v2 import BlockOutput, normalize_saved_report_v2
-from structured_report_v1 import build_structured_report
+from scripts.reporting.structured_report_v1 import build_structured_report
 
 SAVED_REPORT_RUNTIME_VERSION = "v2_typed_blocks_2026-04-09"
 

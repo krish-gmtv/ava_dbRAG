@@ -10,7 +10,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from ava_session_manager import get_session_id
+from _bootstrap_repo_root import ensure_repo_root_on_syspath
+
+ROOT_DIR = ensure_repo_root_on_syspath()
+SCRIPTS_DIR = Path(__file__).resolve().parent
+
+from scripts.ava.ava_session_manager import get_session_id
 
 from intent_router_v1 import period_from_execution_plan
 
@@ -24,8 +29,6 @@ from precise_sql_templates_v1 import (
 logger = logging.getLogger(__name__)
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-ROOT_DIR = SCRIPTS_DIR.parent
 SHADOW_LOG_PATH = ROOT_DIR / "logs" / "route_advisor_shadow_v1.jsonl"
 
 

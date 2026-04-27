@@ -11,7 +11,7 @@ import re
 from http import HTTPStatus
 from typing import Any, Callable, Dict, Optional
 
-from saved_report_flow_v1 import try_handle_saved_report_request
+from scripts.pipeline.saved_report_flow_v1 import try_handle_saved_report_request
 
 
 # Keep a local timeout detector for legacy pipeline execution.
