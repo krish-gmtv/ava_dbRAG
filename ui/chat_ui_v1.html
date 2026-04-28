@@ -169,6 +169,15 @@
         <input id="appUserId" type="text" placeholder="app_user_id (e.g. app-user-123)" />
       </div>
       <div class="row">
+        <label class="meta" style="font-size:12px;">
+          Template:
+          <select id="templatePicker" style="font-size:12px; padding:6px 8px; border-radius:8px; border:1px solid #d1d5db;">
+            <option value="" selected>Auto (match from query)</option>
+          </select>
+        </label>
+      </div>
+      <div id="templateHelp" class="meta" style="margin-top:-6px;"></div>
+      <div class="row">
         <label><input id="useAva" type="checkbox" /> Use Ava phrasing</label>
         <label><input id="strictValidation" type="checkbox" /> Strict validation (Ava output checks)</label>
       </div>
@@ -204,12 +213,16 @@
     const strictValidationInput = document.getElementById("strictValidation");
     const forcePreciseInput = document.getElementById("forcePrecise");
     const developerModeInput = document.getElementById("developerMode");
+    const templatePicker = document.getElementById("templatePicker");
+    const templateHelp = document.getElementById("templateHelp");
 
     const STORAGE_THREAD_KEY = "ava_db_rag_thread_id";
     const STORAGE_USER_KEY = "ava_db_rag_app_user_id";
     const STORAGE_FORCE_PRECISE_KEY = "ava_db_rag_force_precise";
     const STORAGE_DEVELOPER_KEY = "ava_db_rag_developer_mode";
+    const STORAGE_TEMPLATE_KEY = "ava_db_rag_template_id";
     let isSending = false;
+    let templateMeta = {}; // template_id -> {display_name, purpose}
 
     function randomId(prefix) {
       return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
@@ -232,6 +245,11 @@
       appUserIdInput.value = storedAppUserId;
       const storedForce = localStorage.getItem(STORAGE_FORCE_PRECISE_KEY);
       forcePreciseInput.checked = storedForce === "1";
+      const storedTpl = localStorage.getItem(STORAGE_TEMPLATE_KEY) || "";
+      if (storedTpl) {
+        templatePicker.value = storedTpl;
+      }
+      updateTemplateHelp();
     }
 
     function persistIdentityFields() {
@@ -249,6 +267,54 @@
       }
       localStorage.setItem(STORAGE_FORCE_PRECISE_KEY, forcePreciseInput.checked ? "1" : "0");
       localStorage.setItem(STORAGE_DEVELOPER_KEY, developerModeInput.checked ? "1" : "0");
+      const tpl = (templatePicker && templatePicker.value) ? templatePicker.value : "";
+      if (tpl) localStorage.setItem(STORAGE_TEMPLATE_KEY, tpl);
+      else localStorage.removeItem(STORAGE_TEMPLATE_KEY);
+      updateTemplateHelp();
+    }
+
+    function updateTemplateHelp() {
+      if (!templateHelp) return;
+      const tid = (templatePicker && templatePicker.value) ? templatePicker.value : "";
+      if (!tid) {
+        templateHelp.textContent = "Auto: pick the best template from your query.";
+        return;
+      }
+      const meta = templateMeta[tid] || {};
+      const dn = meta.display_name || tid;
+      // Keep this short but actionable: tell the user the minimal input format.
+      let example = "Example: Buyer 119 Q2 2021";
+      if (tid.includes("opportunities")) example = "Example: Buyer 20 Q1 2026";
+      if (tid.includes("upsheets")) example = "Example: Buyer 119 Q2 2021";
+      if (tid.includes("performance")) example = "Example: Buyer 119 Q2 2021";
+      templateHelp.textContent = `Forced: ${dn}. ${example}`;
+    }
+
+    async function loadTemplatesIntoPicker() {
+      try {
+        const res = await fetch("/api/templates");
+        if (!res.ok) return;
+        const data = await res.json();
+        const items = (data && data.templates) ? data.templates : [];
+        if (!Array.isArray(items)) return;
+        // Preserve first "Auto" option
+        for (const t of items) {
+          if (!t || typeof t !== "object") continue;
+          const tid = String(t.template_id || "").trim();
+          if (!tid) continue;
+          const label = String(t.display_name || tid).trim();
+          const purpose = String(t.purpose || "").trim();
+          templateMeta[tid] = { display_name: label, purpose };
+          const opt = document.createElement("option");
+          opt.value = tid;
+          // Keep dropdown short and scannable; details can live elsewhere if needed.
+          opt.textContent = label;
+          templatePicker.appendChild(opt);
+        }
+        const stored = localStorage.getItem(STORAGE_TEMPLATE_KEY) || "";
+        if (stored) templatePicker.value = stored;
+        updateTemplateHelp();
+      } catch (e) {}
     }
 
     function escapeHtml(s) {
@@ -446,7 +512,14 @@
           parts.push(`<div class="report-section"><h3>Request summary</h3><p>${escapeHtml(sec.request_summary)}</p></div>`);
         }
         if (Array.isArray(sec.kpi_table) && sec.kpi_table.length) {
-          parts.push('<div class="report-section"><h3>Key results</h3><table class="kpi-table"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>');
+          const kpiId = `kpi-${Math.random().toString(36).slice(2, 10)}`;
+          parts.push('<div class="report-section">');
+          parts.push(`<h3>Key results
+            <button class="download-btn" data-kpi="1" data-xlsx="1" data-kpi-id="${kpiId}" style="background:#0f766e;">Download XLSX</button>
+            <button class="download-btn" data-kpi="1" data-kpi-id="${kpiId}">Download CSV</button>
+          </h3>`);
+          const kpiRows = sec.kpi_table.map((r) => [formatMetricKey(r.metric_key), String(r.value ?? "")]);
+          parts.push(`<table class="kpi-table" data-kpi-id="${kpiId}" data-cols="${escapeHtml(JSON.stringify(["Metric","Value"]))}" data-rows="${escapeHtml(JSON.stringify(kpiRows))}"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>`);
           for (const row of sec.kpi_table) {
             parts.push(`<tr><td>${escapeHtml(formatMetricKey(row.metric_key))}</td><td>${escapeHtml(row.value)}</td></tr>`);
           }
@@ -470,7 +543,14 @@
           parts.push(`<div class="report-section"><h3>KPI narrative</h3><p>${escapeHtml(sec.kpi_narrative)}</p></div>`);
         }
         if (Array.isArray(sec.kpi_table) && sec.kpi_table.length) {
-          parts.push('<div class="report-section"><h3>KPI snapshot</h3><table class="kpi-table"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>');
+          const kpiId = `kpi-${Math.random().toString(36).slice(2, 10)}`;
+          parts.push('<div class="report-section">');
+          parts.push(`<h3>KPI snapshot
+            <button class="download-btn" data-kpi="1" data-xlsx="1" data-kpi-id="${kpiId}" style="background:#0f766e;">Download XLSX</button>
+            <button class="download-btn" data-kpi="1" data-kpi-id="${kpiId}">Download CSV</button>
+          </h3>`);
+          const kpiRows = sec.kpi_table.map((r) => [formatMetricKey(r.metric_key), String(r.value ?? "")]);
+          parts.push(`<table class="kpi-table" data-kpi-id="${kpiId}" data-cols="${escapeHtml(JSON.stringify(["Field","Value"]))}" data-rows="${escapeHtml(JSON.stringify(kpiRows))}"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>`);
           for (const row of sec.kpi_table) {
             parts.push(`<tr><td>${escapeHtml(formatMetricKey(row.metric_key))}</td><td>${escapeHtml(row.value)}</td></tr>`);
           }
@@ -679,7 +759,8 @@
             use_ava: useAvaInput.checked,
             strict_validation: strictValidationInput.checked,
             force_precise: forcePreciseInput.checked,
-            developer_mode: developerModeInput.checked
+            developer_mode: developerModeInput.checked,
+            template_id: (templatePicker && templatePicker.value) ? templatePicker.value : ""
           })
         });
         const data = await res.json();
@@ -711,6 +792,29 @@
         // Attach CSV download handlers for any preview tables in this bot message.
         botDiv.querySelectorAll("button.download-btn").forEach((btn) => {
           btn.addEventListener("click", () => {
+            const isKpi = btn.getAttribute("data-kpi") === "1";
+            if (isKpi) {
+              const kpiId = btn.getAttribute("data-kpi-id") || "";
+              const table = botDiv.querySelector(`table[data-kpi-id='${cssEscape(kpiId)}']`);
+              if (!table) return;
+              const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
+              const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
+              const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "report";
+              const prefix = `${tpl}_kpi_snapshot`.replace(/\.csv$/i, "");
+              const wantXlsx = btn.getAttribute("data-xlsx") === "1";
+              if (wantXlsx) {
+                downloadXlsx({
+                  filename: `${prefix}.xlsx`,
+                  columns: cols,
+                  rows,
+                  splitMode: "none",
+                  dateColIdx: -1,
+                }).catch((e) => alert(String(e)));
+              } else {
+                downloadCsv(`${prefix}.csv`, cols, rows);
+              }
+              return;
+            }
             const csvId = btn.getAttribute("data-csv-id") || "";
             const title = btn.getAttribute("data-csv-title") || "rows";
             const table = botDiv.querySelector(`table[data-csv-id='${cssEscape(csvId)}']`);
@@ -770,8 +874,10 @@
     appUserIdInput.addEventListener("change", persistIdentityFields);
     forcePreciseInput.addEventListener("change", persistIdentityFields);
     developerModeInput.addEventListener("change", persistIdentityFields);
+    templatePicker.addEventListener("change", persistIdentityFields);
 
     initIdentityFields();
+    loadTemplatesIntoPicker();
     sendBtn.addEventListener("click", sendQuery);
     queryInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {

@@ -1,7 +1,7 @@
 {
   "template_doc_version": "saved_report_template_doc_v1",
   "template_id": "buyer_performance_report_v1",
-  "display_name": "Buyer performance report",
+  "display_name": "Performance analysis",
   "purpose": "Manager-facing buyer performance report with fixed structure every time.",
   "trigger_phrases": [
     "buyer performance report",

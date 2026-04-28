@@ -29,6 +29,13 @@ class KpiAndPerformanceSemanticTests(unittest.TestCase):
         self.assertEqual(
             plan["retrieval_plan"]["handler"], "precise_list_buyer_upsheets"
         )
+    
+    def test_list_opportunities_is_precise(self) -> None:
+        plan = ir.build_execution_plan("List opportunities for Buyer 2 in Q1 2018")
+        self.assertEqual(plan["mode"], "precise")
+        self.assertEqual(
+            plan["retrieval_plan"]["handler"], "precise_list_buyer_opportunities"
+        )
 
 
 class PeriodFromExecutionPlanTests(unittest.TestCase):

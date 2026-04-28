@@ -80,12 +80,22 @@ def build_structured_report(final_response: Dict[str, Any]) -> Dict[str, Any]:
             snapshot = {}
         notes = final_response.get("data_coverage_notes") or []
         note_list = [str(n) for n in notes if _str(n)]
+        # For listing-style precise answers, surface a row preview table so the UI can offer
+        # CSV/XLSX downloads consistently (same UI component as saved reports).
+        preview_rows = []
+        sd = final_response.get("supporting_details") or {}
+        if isinstance(sd, dict):
+            preview_rows = sd.get("first_rows_preview") or []
+        row_preview_tables = _preview_tables_to_sections(
+            [{"title": "Row preview", "rows": preview_rows}] if preview_rows else []
+        )
         return {
             "schema_version": REPORT_SCHEMA_VERSION,
             "report_kind": "precise",
             "sections": {
                 "request_summary": _optional_str(final_response, "request_summary"),
                 "kpi_table": _snapshot_to_rows(snapshot),
+                "row_preview_tables": row_preview_tables,
                 "notes": note_list,
                 "suggested_next_question": _optional_str(
                     final_response, "suggested_next_question"

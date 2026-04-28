@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,42 @@ from template_matcher_v1 import (
 )
 
 SAVED_REPORT_PLAN_CONTRACT_VERSION = "v2_template_contract_2026-04-14"
+
+
+def _loose_buyer_id_for_forced_template(query: str) -> Optional[int]:
+    """
+    When a UI template is explicitly selected, allow shorthand like:
+      "119 Q2 2021"
+    without requiring the word "Buyer".
+    """
+    q = (query or "").strip()
+    if not q:
+        return None
+    # If the query already includes Buyer <id>, use the canonical parser.
+    bid = parse_buyer_id(q)
+    if bid is not None:
+        return bid
+    # Only apply shorthand if it looks like a period is present.
+    if not re.search(r"\bq[1-4]\b", q, re.IGNORECASE) and not re.search(
+        r"\b(19\d{2}|20\d{2})\b", q
+    ):
+        return None
+    # Extract standalone integers, then subtract obvious timeframe numbers (Qx and YYYY).
+    nums = [int(x) for x in re.findall(r"\b(\d{1,4})\b", q)]
+    if not nums:
+        return None
+    qmatch = re.search(r"\bq([1-4])\b", q, re.IGNORECASE)
+    if qmatch:
+        try:
+            qn = int(qmatch.group(1))
+            nums = [n for n in nums if n != qn]
+        except ValueError:
+            pass
+    nums = [n for n in nums if not (1900 <= n <= 2099)]
+    # If there is exactly one remaining number, treat it as buyer_id.
+    if len(nums) != 1:
+        return None
+    return nums[0]
 
 
 def _blocks_to_run(
@@ -93,6 +130,42 @@ def plan_saved_report(user_query: str) -> Optional[Dict[str, Any]]:
         "prompt_modules": list(tpl.prompt_modules),
         "data_blocks": _blocks_to_run(tid, user_query=q),
         "ready_to_execute": len(missing) == 0,
+    }
+
+
+def plan_saved_report_for_template(user_query: str, template_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Force planning against a specific template id (used by UI template picker).
+
+    Returns None only when the user_query is empty.
+    """
+    q = (user_query or "").strip()
+    tid = (template_id or "").strip()
+    if not q:
+        return None
+    if not tid:
+        return plan_saved_report(q)
+
+    tpl = get_template(tid)
+    slots = extract_template_slots(q, tpl)
+    # Forced-template UX: allow minimal "119 Q2 2021" style input.
+    if slots.get("buyer_id") is None:
+        slots["buyer_id"] = _loose_buyer_id_for_forced_template(q)
+    missing = missing_required_slots(tpl, slots)
+    return {
+        "kind": "saved_report_plan_v1",
+        "contract_version": SAVED_REPORT_PLAN_CONTRACT_VERSION,
+        "template_id": tid,
+        "display_name": tpl.display_name,
+        "purpose": tpl.purpose,
+        "slots": slots,
+        "missing_required_slots": missing,
+        "section_order": list(tpl.section_order),
+        "phrasing_rules": list(tpl.phrasing_rules),
+        "prompt_modules": list(tpl.prompt_modules),
+        "data_blocks": _blocks_to_run(tid, user_query=q),
+        "ready_to_execute": len(missing) == 0,
+        "forced_template": True,
     }
 
 

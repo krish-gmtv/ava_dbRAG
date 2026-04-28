@@ -1,5 +1,4 @@
 import argparse
-import io
 import json
 import re
 import subprocess
@@ -26,8 +25,13 @@ from scripts.reporting.structured_report_v1 import (
     build_structured_report_from_ui_fallback,
 )
 from scripts.templates.template_executor_v1 import execute_saved_report_plan
-from scripts.templates.template_report_orchestrator_v1 import plan_saved_report
+from scripts.templates.saved_report_templates_v1 import get_template, list_template_ids
+from scripts.templates.template_report_orchestrator_v1 import (
+    plan_saved_report,
+    plan_saved_report_for_template,
+)
 from scripts.pipeline.chat_pipeline_v1 import process_chat_request
+from scripts.server.xlsx_export_v1 import build_xlsx_bytes
 
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 UI_HTML_PATH = ROOT_DIR / "ui" / "chat_ui_v1.html"
@@ -54,11 +58,6 @@ DOMAIN_KEYWORDS = (
 )
 GREETING_WORDS = ("hello", "hi", "hey", "good morning", "good afternoon", "good evening")
 AFFIRM_WORDS = {"yes", "yeah", "yep", "sure", "ok", "okay", "do it", "go ahead"}
-
-try:
-    from openpyxl import Workbook  # type: ignore
-except Exception:  # pragma: no cover
-    Workbook = None  # type: ignore
 
 
 def attach_structured_payload(resp: Dict[str, Any], developer_mode: bool) -> None:
@@ -604,6 +603,19 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/templates":
+            items = []
+            for tid in list_template_ids():
+                tpl = get_template(tid)
+                items.append(
+                    {
+                        "template_id": tid,
+                        "display_name": tpl.display_name,
+                        "purpose": tpl.purpose,
+                    }
+                )
+            self._send_json(HTTPStatus.OK, {"templates": items})
+            return
         if parsed.path in ("/", "/chat"):
             if not UI_HTML_PATH.exists():
                 self._send_html(
@@ -633,95 +645,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Body must be valid JSON."})
                 return
-
-            if Workbook is None:
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "XLSX export unavailable",
-                        "details": "Missing dependency: openpyxl. Install it with: pip install openpyxl",
-                    },
-                )
+            status, err_json, body, filename = build_xlsx_bytes(payload if isinstance(payload, dict) else {})
+            if err_json is not None:
+                self._send_json(status, err_json)
                 return
-
-            columns = payload.get("columns")
-            rows = payload.get("rows")
-            split_mode = str(payload.get("split_mode") or "none").strip().lower()
-            date_col_idx = payload.get("date_col_idx")
-            filename = str(payload.get("filename") or "report.xlsx").strip() or "report.xlsx"
-            if not filename.lower().endswith(".xlsx"):
-                filename += ".xlsx"
-
-            if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "columns must be a list of strings"})
-                return
-            if not isinstance(rows, list) or not all(isinstance(r, list) for r in rows):
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "rows must be a list of arrays"})
-                return
-
-            try:
-                date_col = int(date_col_idx) if date_col_idx is not None else -1
-            except Exception:
-                date_col = -1
-
-            def parse_date_key(val: Any) -> str:
-                s = str(val or "").strip()
-                if len(s) >= 10 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", s[:10]):
-                    yyyy, mm, dd = s[:10].split("-")
-                    if split_mode == "year":
-                        return yyyy
-                    if split_mode == "month":
-                        return f"{yyyy}-{mm}"
-                    if split_mode == "week":
-                        # ISO week key using Python's datetime
-                        try:
-                            from datetime import date as _date
-
-                            d = _date(int(yyyy), int(mm), int(dd))
-                            iso_year, iso_week, _ = d.isocalendar()
-                            return f"{iso_year}-W{iso_week:02d}"
-                        except Exception:
-                            return "unknown_date"
-                return "unknown_date"
-
-            buckets: Dict[str, list[list[Any]]] = {}
-            if split_mode in {"week", "month", "year"} and date_col >= 0:
-                for r in rows:
-                    key = parse_date_key(r[date_col] if date_col < len(r) else None)
-                    buckets.setdefault(key, []).append(r)
-            else:
-                buckets = {"Data": rows}
-
-            wb = Workbook()
-            # Remove the default sheet; we will add our own deterministically.
-            default_ws = wb.active
-            wb.remove(default_ws)
-
-            def safe_sheet_name(name: str, used: set[str]) -> str:
-                base = re.sub(r"[\[\]\*\?/\\:]", "_", name).strip() or "Sheet"
-                base = base[:31]
-                out = base
-                i = 2
-                while out in used:
-                    suffix = f"_{i}"
-                    out = (base[: (31 - len(suffix))] + suffix)[:31]
-                    i += 1
-                used.add(out)
-                return out
-
-            used_names: set[str] = set()
-            for key in sorted(buckets.keys()):
-                ws = wb.create_sheet(title=safe_sheet_name(key, used_names))
-                ws.append(columns)
-                for r in buckets[key]:
-                    # Cast to string for stability and to avoid Excel type surprises.
-                    ws.append([("" if v is None else str(v)) for v in r])
-
-            bio = io.BytesIO()
-            wb.save(bio)
-            body = bio.getvalue()
+            assert body is not None and filename is not None
             self._send_bytes(
-                status=int(HTTPStatus.OK),
+                status=status,
                 body=body,
                 content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 filename=filename,
@@ -751,6 +681,13 @@ class ChatHandler(BaseHTTPRequestHandler):
         developer_mode = bool(payload.get("developer_mode", False))
         thread_id = str(payload.get("thread_id") or "").strip()
         app_user_id = str(payload.get("app_user_id") or "").strip()
+        forced_template_id = str(payload.get("template_id") or "").strip()
+
+        plan_fn = (
+            (lambda q: plan_saved_report_for_template(q, forced_template_id))
+            if forced_template_id
+            else plan_saved_report
+        )
         response = process_chat_request(
             query=query,
             use_ava=use_ava,
@@ -773,7 +710,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             saved_report_clarification_response=saved_report_clarification_response,
             attach_structured_payload=attach_structured_payload,
             update_thread_ctx=update_thread_ctx,
-            plan_saved_report=plan_saved_report,
+            plan_saved_report=plan_fn,
             execute_saved_report_plan=execute_saved_report_plan,
             run_pipeline=run_pipeline,
         )

@@ -1,14 +1,14 @@
 {
   "template_doc_version": "saved_report_template_doc_v1",
-  "template_id": "buyer_upsheets_listing_report_v1",
-  "display_name": "Upsheets listing",
-  "purpose": "Manager-facing upsheet listing report for a buyer and period (precise rows).",
+  "template_id": "buyer_opportunities_listing_report_v1",
+  "display_name": "Opportunities listing",
+  "purpose": "Manager-facing opportunity listing report for a buyer and period (precise rows).",
   "trigger_phrases": [
-    "upsheets report",
-    "upsheet report",
-    "upsheets listing",
-    "list upsheets",
-    "buyer upsheets"
+    "opportunities report",
+    "opportunity report",
+    "opportunities listing",
+    "list opportunities",
+    "buyer opportunities"
   ],
   "required_slots": ["buyer", "timeframe"],
   "optional_slots": [],
@@ -26,17 +26,6 @@
   "prompt_modules": ["kpi_narrative", "notes"],
   "disallowed_without_explicit_request": [],
   "data_blocks": [
-    {
-      "block_id": "row_listing_upsheets",
-      "description": "Raw Postgres upsheet rows; precise listing path.",
-      "block_type": "row_listing",
-      "retrieval_mode": "precise",
-      "query_family_hint": "list_buyer_upsheets",
-      "output_key": "kpi_snapshot",
-      "source_mode": "precise",
-      "runtime_rules": [],
-      "requires_explicit_user_request": false
-    },
     {
       "block_id": "row_listing_opportunities",
       "description": "Raw Postgres opportunity rows; precise listing path.",
