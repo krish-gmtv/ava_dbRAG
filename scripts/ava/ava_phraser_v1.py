@@ -8,8 +8,16 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
-from validate_ava_output_v1 import validate_ava_output
-from ava_safe_phraser import safe_ws_phrase
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(_SCRIPTS_DIR) not in sys.path:
+    # Allow importing scripts/_bootstrap_repo_root.py when running from scripts/ava/.
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from _bootstrap_repo_root import ensure_repo_root_on_syspath  # noqa: E402
+
+ensure_repo_root_on_syspath()
+
+from scripts.reporting.validate_ava_output_v1 import validate_ava_output
+from scripts.ava.ava_safe_phraser import safe_ws_phrase
 from scripts.reporting.structured_report_v1 import build_structured_report
 
 

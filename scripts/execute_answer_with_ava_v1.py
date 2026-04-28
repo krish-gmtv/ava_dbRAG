@@ -66,7 +66,7 @@ def main() -> None:
     if args.app_user_id.strip():
         phraser_args.extend(["--app-user-id", args.app_user_id.strip()])
 
-    result = run_json(SCRIPTS_DIR / "ava_phraser_v1.py", phraser_args)
+    result = run_json(SCRIPTS_DIR / "ava" / "ava_phraser_v1.py", phraser_args)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

@@ -296,6 +296,142 @@
       URL.revokeObjectURL(url);
     }
 
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function pickBestDateColumn(columns) {
+      const cols = (columns || []).map((c) => String(c || "").trim().toLowerCase());
+      const preferred = [
+        "insert_date",
+        "created_at",
+        "created_date",
+        "sold_date",
+        "delivered_date",
+        "close_date",
+        "updated_at",
+        "date",
+      ];
+      for (const p of preferred) {
+        const idx = cols.indexOf(p);
+        if (idx >= 0) return idx;
+      }
+      // Fallback: any column with "date" in its name.
+      for (let i = 0; i < cols.length; i++) {
+        if (cols[i].includes("date")) return i;
+      }
+      return -1;
+    }
+
+    function parseDateLoose(s) {
+      const raw = String(s ?? "").trim();
+      if (!raw) return null;
+      // Common formats seen in this repo: "2021-04-06 04:00:00-04:00"
+      const isoPrefix = raw.slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(isoPrefix)) {
+        const d = new Date(isoPrefix + "T00:00:00Z");
+        if (!isNaN(d.getTime())) return d;
+      }
+      const d2 = new Date(raw);
+      if (!isNaN(d2.getTime())) return d2;
+      return null;
+    }
+
+    function isoWeekKey(d) {
+      // ISO week number with Monday as first day of week.
+      const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+      const dayNum = date.getUTCDay() || 7; // 1..7
+      date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+      const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+      const weekStr = String(weekNo).padStart(2, "0");
+      return `${date.getUTCFullYear()}-W${weekStr}`;
+    }
+
+    async function downloadCsvSplit({
+      filenamePrefix,
+      columns,
+      rows,
+      splitMode,
+      dateColIdx,
+    }) {
+      if (!splitMode || splitMode === "none") {
+        downloadCsv(`${filenamePrefix}.csv`, columns, rows);
+        return;
+      }
+      if (dateColIdx == null || dateColIdx < 0) {
+        // No date column -> fallback to a single file.
+        downloadCsv(`${filenamePrefix}.csv`, columns, rows);
+        return;
+      }
+
+      const buckets = new Map(); // key -> rows[]
+      for (const r of (rows || [])) {
+        const cell = (r || [])[dateColIdx];
+        const d = parseDateLoose(cell);
+        let key = "unknown_date";
+        if (d) {
+          const y = d.getUTCFullYear();
+          const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+          if (splitMode === "year") key = String(y);
+          else if (splitMode === "month") key = `${y}-${m}`;
+          else if (splitMode === "week") key = isoWeekKey(d);
+        }
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(r);
+      }
+
+      const keys = Array.from(buckets.keys()).sort();
+      if (keys.length <= 1) {
+        downloadCsv(`${filenamePrefix}.csv`, columns, rows);
+        return;
+      }
+
+      // Browsers often block a burst of downloads; space them slightly.
+      for (const k of keys) {
+        const fn = `${filenamePrefix}_${k}.csv`;
+        downloadCsv(fn, columns, buckets.get(k));
+        await sleep(120);
+      }
+    }
+
+    async function downloadXlsx({
+      filename,
+      columns,
+      rows,
+      splitMode,
+      dateColIdx,
+    }) {
+      const res = await fetch("/api/export/xlsx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename,
+          columns,
+          rows,
+          split_mode: splitMode || "none",
+          date_col_idx: (typeof dateColIdx === "number" ? dateColIdx : -1),
+        }),
+      });
+      if (!res.ok) {
+        let msg = `XLSX export failed (HTTP ${res.status})`;
+        try {
+          const j = await res.json();
+          msg = `${j.error || msg}${j.details ? " | " + j.details : ""}`;
+        } catch (e) {}
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
     function renderStructuredReport(sr, developerPayload, showDev) {
       if (!sr || typeof sr !== "object") {
         return "";
@@ -350,7 +486,17 @@
             const csvId = `csv-${Math.random().toString(36).slice(2, 10)}`;
             const fileSafeTitle = title.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") || "rows";
             parts.push(`<div class="report-section">`);
-            parts.push(`<h3>${escapeHtml(title)} <button class="download-btn" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}">Download CSV</button></h3>`);
+            parts.push(`<h3>${escapeHtml(title)}
+              <span class="meta" style="margin-left:8px;">Split by:</span>
+              <select class="csv-split" data-csv-id="${csvId}" style="font-size:12px; padding:4px 6px; border-radius:8px; border:1px solid #d1d5db;">
+                <option value="none" selected>None</option>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+                <option value="year">Year</option>
+              </select>
+              <button class="download-btn" data-xlsx="1" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}" style="background:#0f766e;">Download XLSX</button>
+              <button class="download-btn" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}">Download CSV</button>
+            </h3>`);
             parts.push(`<table class="kpi-table" data-csv-id="${csvId}" data-cols="${escapeHtml(JSON.stringify(cols))}" data-rows="${escapeHtml(JSON.stringify(rows))}"><thead><tr>`);
             for (const c of cols) {
               parts.push(`<th>${escapeHtml(formatMetricKey(c))}</th>`);
@@ -572,8 +718,28 @@
             const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
             const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
             const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "report";
-            const fn = `${tpl}_${title}.csv`;
-            downloadCsv(fn, cols, rows);
+            const splitSel = botDiv.querySelector(`select.csv-split[data-csv-id='${cssEscape(csvId)}']`);
+            const splitMode = splitSel ? String(splitSel.value || "none") : "none";
+            const dateColIdx = pickBestDateColumn(cols);
+            const prefix = `${tpl}_${title}`.replace(/\.csv$/i, "");
+            const wantXlsx = btn.getAttribute("data-xlsx") === "1";
+            if (wantXlsx) {
+              downloadXlsx({
+                filename: `${prefix}.xlsx`,
+                columns: cols,
+                rows,
+                splitMode,
+                dateColIdx,
+              }).catch((e) => alert(String(e)));
+            } else {
+              downloadCsvSplit({
+                filenamePrefix: prefix,
+                columns: cols,
+                rows,
+                splitMode,
+                dateColIdx,
+              });
+            }
           });
         });
         if (!showDev && data.phrasing_mode === "deterministic_fallback") {

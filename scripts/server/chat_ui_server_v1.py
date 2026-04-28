@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import re
 import subprocess
@@ -53,6 +54,11 @@ DOMAIN_KEYWORDS = (
 )
 GREETING_WORDS = ("hello", "hi", "hey", "good morning", "good afternoon", "good evening")
 AFFIRM_WORDS = {"yes", "yeah", "yep", "sure", "ok", "okay", "do it", "go ahead"}
+
+try:
+    from openpyxl import Workbook  # type: ignore
+except Exception:  # pragma: no cover
+    Workbook = None  # type: ignore
 
 
 def attach_structured_payload(resp: Dict[str, Any], developer_mode: bool) -> None:
@@ -580,6 +586,14 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, *, status: int, body: bytes, content_type: str, filename: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_html(self, status: int, html: str) -> None:
         body = html.encode("utf-8")
         self.send_response(status)
@@ -611,6 +625,109 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/export/xlsx":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Body must be valid JSON."})
+                return
+
+            if Workbook is None:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "XLSX export unavailable",
+                        "details": "Missing dependency: openpyxl. Install it with: pip install openpyxl",
+                    },
+                )
+                return
+
+            columns = payload.get("columns")
+            rows = payload.get("rows")
+            split_mode = str(payload.get("split_mode") or "none").strip().lower()
+            date_col_idx = payload.get("date_col_idx")
+            filename = str(payload.get("filename") or "report.xlsx").strip() or "report.xlsx"
+            if not filename.lower().endswith(".xlsx"):
+                filename += ".xlsx"
+
+            if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "columns must be a list of strings"})
+                return
+            if not isinstance(rows, list) or not all(isinstance(r, list) for r in rows):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "rows must be a list of arrays"})
+                return
+
+            try:
+                date_col = int(date_col_idx) if date_col_idx is not None else -1
+            except Exception:
+                date_col = -1
+
+            def parse_date_key(val: Any) -> str:
+                s = str(val or "").strip()
+                if len(s) >= 10 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", s[:10]):
+                    yyyy, mm, dd = s[:10].split("-")
+                    if split_mode == "year":
+                        return yyyy
+                    if split_mode == "month":
+                        return f"{yyyy}-{mm}"
+                    if split_mode == "week":
+                        # ISO week key using Python's datetime
+                        try:
+                            from datetime import date as _date
+
+                            d = _date(int(yyyy), int(mm), int(dd))
+                            iso_year, iso_week, _ = d.isocalendar()
+                            return f"{iso_year}-W{iso_week:02d}"
+                        except Exception:
+                            return "unknown_date"
+                return "unknown_date"
+
+            buckets: Dict[str, list[list[Any]]] = {}
+            if split_mode in {"week", "month", "year"} and date_col >= 0:
+                for r in rows:
+                    key = parse_date_key(r[date_col] if date_col < len(r) else None)
+                    buckets.setdefault(key, []).append(r)
+            else:
+                buckets = {"Data": rows}
+
+            wb = Workbook()
+            # Remove the default sheet; we will add our own deterministically.
+            default_ws = wb.active
+            wb.remove(default_ws)
+
+            def safe_sheet_name(name: str, used: set[str]) -> str:
+                base = re.sub(r"[\[\]\*\?/\\:]", "_", name).strip() or "Sheet"
+                base = base[:31]
+                out = base
+                i = 2
+                while out in used:
+                    suffix = f"_{i}"
+                    out = (base[: (31 - len(suffix))] + suffix)[:31]
+                    i += 1
+                used.add(out)
+                return out
+
+            used_names: set[str] = set()
+            for key in sorted(buckets.keys()):
+                ws = wb.create_sheet(title=safe_sheet_name(key, used_names))
+                ws.append(columns)
+                for r in buckets[key]:
+                    # Cast to string for stability and to avoid Excel type surprises.
+                    ws.append([("" if v is None else str(v)) for v in r])
+
+            bio = io.BytesIO()
+            wb.save(bio)
+            body = bio.getvalue()
+            self._send_bytes(
+                status=int(HTTPStatus.OK),
+                body=body,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=filename,
+            )
+            return
+
         if parsed.path != "/api/chat":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
