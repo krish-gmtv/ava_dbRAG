@@ -1,12 +1,22 @@
 import json
+import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import requests
 
 try:
     import websocket  # websocket-client
 except ImportError:  # pragma: no cover
     websocket = None  # type: ignore
+
+try:
+    from ava_session_manager import extract_last_model_reply, get_session_events
+except ImportError:  # pragma: no cover
+    from scripts.ava.ava_session_manager import (  # type: ignore
+        extract_last_model_reply,
+        get_session_events,
+    )
 
 
 WS_URL_TEMPLATE = "wss://ava.andrew-chat.com/api/v1/stream?token={token}"
@@ -180,4 +190,142 @@ def stream_chat_text(
             ws.close()
         except Exception:
             pass
+
+
+def submit_chat_message_websocket_only(
+    token: str,
+    user_id: str,
+    session_id: str,
+    message: str,
+    socket_timeout_sec: float = 10.0,
+) -> None:
+    """
+    Open the stream WebSocket, send the user message, and close without reading frames.
+    Use with GET /session/events/... polling (Ava API §4.4) to collect the model reply.
+    """
+    if websocket is None:
+        raise RuntimeError("Missing dependency websocket-client. Install with: pip install websocket-client")
+
+    ws_url = WS_URL_TEMPLATE.format(token=token)
+    ws = websocket.create_connection(ws_url, timeout=socket_timeout_sec)
+    try:
+        try:
+            ws.settimeout(socket_timeout_sec)
+        except Exception:
+            pass
+        payload = {"user_id": user_id, "session_id": session_id, "message": message}
+        ws.send(json.dumps(payload))
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def submit_chat_message_http_prism(
+    token: str,
+    user_id: str,
+    session_id: str,
+    message: str,
+    timeout: float = 120.0,
+) -> Any:
+    """
+    POST /api/v1/prism — same body as WebSocket. Slower; optional submit path for events polling.
+    """
+    url = "https://ava.andrew-chat.com/api/v1/prism"
+    resp = requests.post(
+        url,
+        headers={"Authorization": token, "Content-Type": "application/json"},
+        json={"user_id": user_id, "session_id": session_id, "message": message},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def poll_session_events_for_model_text(
+    token: str,
+    user_id: str,
+    session_id: str,
+    *,
+    total_timeout_sec: float,
+    poll_interval_sec: float,
+    stable_rounds: int,
+) -> Tuple[str, List[str]]:
+    """
+    Poll GET /api/v1/session/events/<session_id>/<user_id> until the last model
+    message text stabilizes (same text for ``stable_rounds`` consecutive polls) or timeout.
+    """
+    deadline = time.time() + float(total_timeout_sec)
+    last_text = ""
+    stable = 0
+    debug_lines: List[str] = []
+    first_delay = float(os.environ.get("AVA_EVENTS_FIRST_POLL_DELAY_SEC", "0.15"))
+    if first_delay > 0:
+        time.sleep(first_delay)
+
+    while time.time() < deadline:
+        try:
+            events = get_session_events(session_id, user_id, token)
+        except Exception as exc:  # pragma: no cover
+            debug_lines.append(f"events_error={exc!r}")
+            time.sleep(poll_interval_sec)
+            continue
+        text = _strip_end_markers(extract_last_model_reply(events)).strip()
+        debug_lines.append(f"n_events={len(events)} model_len={len(text)}")
+        if text:
+            if text == last_text:
+                stable += 1
+                if stable >= max(1, int(stable_rounds)):
+                    return text, debug_lines
+            else:
+                stable = 0
+                last_text = text
+        time.sleep(float(poll_interval_sec))
+
+    if last_text:
+        return _strip_end_markers(last_text).strip(), debug_lines
+    raise RuntimeError("Session events polling timed out with no model text.")
+
+
+def stream_chat_text_via_session_events(
+    token: str,
+    user_id: str,
+    session_id: str,
+    message: str,
+    total_timeout_sec: float,
+    socket_timeout_sec: float = 10.0,
+) -> Tuple[str, List[str]]:
+    """
+    Submit the message (WebSocket send-only or HTTP /prism), then collect the reply
+    by polling the session events API (§4.4) instead of reading WebSocket frames.
+    """
+    submit_mode = (os.environ.get("AVA_EVENTS_SUBMIT", "ws") or "ws").strip().lower()
+    if submit_mode in ("http", "prism", "http_prism"):
+        submit_chat_message_http_prism(
+            token,
+            user_id,
+            session_id,
+            message,
+            timeout=min(120.0, float(total_timeout_sec) + 30.0),
+        )
+    else:
+        submit_chat_message_websocket_only(
+            token=token,
+            user_id=user_id,
+            session_id=session_id,
+            message=message,
+            socket_timeout_sec=socket_timeout_sec,
+        )
+
+    poll_interval = float(os.environ.get("AVA_EVENTS_POLL_INTERVAL_SEC", "0.4"))
+    stable_rounds = int(os.environ.get("AVA_EVENTS_STABLE_ROUNDS", "2"))
+    return poll_session_events_for_model_text(
+        token,
+        user_id,
+        session_id,
+        total_timeout_sec=total_timeout_sec,
+        poll_interval_sec=poll_interval,
+        stable_rounds=max(1, stable_rounds),
+    )
 

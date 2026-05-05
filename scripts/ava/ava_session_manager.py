@@ -1,6 +1,8 @@
+import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -15,6 +17,67 @@ AVA_SESSION_GET_URL_TEMPLATE = "https://ava.andrew-chat.com/api/v1/session/{user
 AVA_CLOSE_SESSION_URL_TEMPLATE = (
     "https://ava.andrew-chat.com/api/v1/session/{user_id}"
 )
+
+# Ava API guide §4.4 — session events (poll alternative to WS streaming).
+AVA_SESSION_EVENTS_TEMPLATE = (
+    "https://ava.andrew-chat.com/api/v1/session/events/{session_id}/{user_id}"
+)
+
+
+def parse_session_events_payload(payload: Any) -> List[Dict[str, Any]]:
+    """
+    Ava API §4.4: ``events`` may be a JSON-encoded string or a JSON array.
+    Each item is typically ``{ "role": "user"|"model", "text": "..." }``.
+    """
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("events")
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [x for x in raw if isinstance(x, dict)]
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return [x for x in parsed if isinstance(x, dict)]
+    return []
+
+
+def extract_last_model_reply(events: List[Dict[str, Any]]) -> str:
+    """Return text from the last event whose role looks like the assistant/model."""
+    last = ""
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        role = str(e.get("role") or "").strip().lower()
+        if role in ("model", "assistant", "ava"):
+            t = e.get("text")
+            if isinstance(t, str) and t.strip():
+                last = t.strip()
+    return last
+
+
+def get_session_events(session_id: str, user_id: str, token: str) -> List[Dict[str, Any]]:
+    """
+    GET ``/api/v1/session/events/<session_id>/<user_id>``.
+    Authorization header must be the raw token from Step 1 (no ``Bearer`` prefix).
+    """
+    sid = quote(str(session_id), safe="")
+    uid = quote(str(user_id), safe="")
+    url = AVA_SESSION_EVENTS_TEMPLATE.format(session_id=sid, user_id=uid)
+    resp = requests.get(url, headers={"Authorization": token}, timeout=30)
+    resp.raise_for_status()
+    try:
+        data = resp.json()
+    except ValueError:
+        return []
+    return parse_session_events_payload(data)
 
 
 def _extract_session_id(data: Any) -> str:

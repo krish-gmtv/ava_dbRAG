@@ -10,7 +10,7 @@ from ava_session_manager import (
     get_or_create_thread_session,
     invalidate_thread_session,
 )
-from ava_ws_client import stream_chat_text
+from ava_ws_client import stream_chat_text, stream_chat_text_via_session_events
 from prompt_assembler_v1 import build_saved_report_ws_message
 
 
@@ -142,8 +142,34 @@ def safe_ws_phrase(
             total_timeout_sec = float(os.environ.get("AVA_WS_TOTAL_TIMEOUT_SEC", "20"))
     socket_timeout_sec = float(os.environ.get("AVA_WS_SOCKET_TIMEOUT_SEC", "10"))
     idle_timeout_sec = float(os.environ.get("AVA_WS_IDLE_TIMEOUT_SEC", "4"))
-    try:
-        full_text, _frames = stream_chat_text(
+    # New default: use session events polling (Ava API §4.4).
+    # Keep ws_stream available as explicit override and as fallback.
+    transport = (os.environ.get("AVA_PHRASING_TRANSPORT") or "events_poll").strip().lower()
+    use_events_poll = transport in ("events_poll", "session_events", "events")
+
+    def _run_ava_stream():
+        if use_events_poll:
+            try:
+                return stream_chat_text_via_session_events(
+                    token=token,
+                    user_id=user_id,
+                    session_id=session_id,
+                    message=message,
+                    total_timeout_sec=total_timeout_sec,
+                    socket_timeout_sec=socket_timeout_sec,
+                )
+            except Exception:
+                # Fallback requested by team lead: if events polling fails, fall back to classic WS stream.
+                return stream_chat_text(
+                    token=token,
+                    user_id=user_id,
+                    session_id=session_id,
+                    message=message,
+                    total_timeout_sec=total_timeout_sec,
+                    socket_timeout_sec=socket_timeout_sec,
+                    max_idle_sec=idle_timeout_sec,
+                )
+        return stream_chat_text(
             token=token,
             user_id=user_id,
             session_id=session_id,
@@ -152,6 +178,9 @@ def safe_ws_phrase(
             socket_timeout_sec=socket_timeout_sec,
             max_idle_sec=idle_timeout_sec,
         )
+
+    try:
+        full_text, _frames = _run_ava_stream()
     except Exception as first_exc:
         # Session may be stale/invalid. Invalidate cache, reacquire once, retry once.
         invalidate_thread_session(app_user_id=app_user_id, thread_id=thread_id)
@@ -161,15 +190,7 @@ def safe_ws_phrase(
             token=token,
         )
         try:
-            full_text, _frames = stream_chat_text(
-                token=token,
-                user_id=user_id,
-                session_id=session_id,
-                message=message,
-                total_timeout_sec=total_timeout_sec,
-                socket_timeout_sec=socket_timeout_sec,
-                max_idle_sec=idle_timeout_sec,
-            )
+            full_text, _frames = _run_ava_stream()
         except Exception as retry_exc:
             raise RuntimeError(
                 f"WS phrasing failed after one session refresh retry. first_error={first_exc}; retry_error={retry_exc}"

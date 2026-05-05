@@ -208,6 +208,17 @@ def export_template_to_doc_v1(tpl: SavedReportTemplate) -> Dict[str, Any]:
     Useful for bootstrapping an editor or creating the first JSON template.
     """
     dd = asdict(tpl)
+    # asdict preserves tuples from dataclass; template-doc contract expects lists.
+    if isinstance(dd.get("trigger_phrases"), tuple):
+        dd["trigger_phrases"] = list(dd["trigger_phrases"])
+    if isinstance(dd.get("section_order"), tuple):
+        dd["section_order"] = list(dd["section_order"])
+    if isinstance(dd.get("phrasing_rules"), tuple):
+        dd["phrasing_rules"] = list(dd["phrasing_rules"])
+    if isinstance(dd.get("prompt_modules"), tuple):
+        dd["prompt_modules"] = list(dd["prompt_modules"])
+    if isinstance(dd.get("data_blocks"), tuple):
+        dd["data_blocks"] = list(dd["data_blocks"])
     dd["required_slots"] = sorted(list(dd["required_slots"]))
     dd["optional_slots"] = sorted(list(dd["optional_slots"]))
     dd["disallowed_without_explicit_request"] = sorted(

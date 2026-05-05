@@ -8,7 +8,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -23,6 +23,13 @@ from scripts.reporting.structured_report_v1 import (
     build_developer_diagnostics,
     build_structured_report,
     build_structured_report_from_ui_fallback,
+)
+from scripts.templates.template_docs_v1 import template_from_doc_v1, validate_template_doc_v1
+from scripts.templates.template_docs_v1 import export_template_to_doc_v1
+from scripts.templates.template_matcher_v1 import (
+    explicit_listing_requested,
+    extract_template_slots,
+    missing_required_slots,
 )
 from scripts.templates.template_executor_v1 import execute_saved_report_plan
 from scripts.templates.saved_report_templates_v1 import get_template, list_template_ids
@@ -64,6 +71,10 @@ def attach_structured_payload(resp: Dict[str, Any], developer_mode: bool) -> Non
     raw = resp.get("raw")
     if isinstance(raw, dict) and isinstance(raw.get("final_response"), dict):
         resp["structured_report"] = build_structured_report(raw["final_response"])
+        plan = raw.get("execution_plan") or {}
+        if isinstance(plan, dict) and isinstance(plan.get("section_order"), list):
+            # Optional UI hint: render sections in template order.
+            resp["structured_report"]["section_order"] = plan.get("section_order")
     else:
         resp["structured_report"] = build_structured_report_from_ui_fallback(
             display_text=str(resp.get("display_text") or ""),
@@ -73,6 +84,34 @@ def attach_structured_payload(resp: Dict[str, Any], developer_mode: bool) -> Non
         resp["developer"] = build_developer_diagnostics(raw if isinstance(raw, dict) else {})
     else:
         resp.pop("developer", None)
+
+
+def _loose_buyer_id_from_query(query: str) -> Optional[int]:
+    """
+    Accept shorthand inputs like "119 Q2 2021" where buyer is the only
+    non-quarter, non-year integer in the text.
+    """
+    q = str(query or "")
+    ints = [int(x) for x in re.findall(r"\b\d+\b", q)]
+    if not ints:
+        return None
+    q_lower = q.lower()
+    quarter_nums = set()
+    m = re.search(r"\bq([1-4])\b", q_lower)
+    if m:
+        quarter_nums.add(int(m.group(1)))
+    # Filter out quarter numbers and likely years.
+    cand = [n for n in ints if n not in quarter_nums and not (1900 <= n <= 2100)]
+    if len(cand) == 1:
+        return cand[0]
+    # Fallback: if query starts with a number, treat it as buyer_id.
+    m2 = re.match(r"^\s*(\d+)\b", q)
+    if m2:
+        try:
+            return int(m2.group(1))
+        except Exception:
+            return None
+    return None
 
 
 def run_pipeline(
@@ -603,6 +642,26 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/templates/doc":
+            try:
+                from urllib.parse import parse_qs
+
+                qs = parse_qs(parsed.query or "")
+                tid = (qs.get("template_id") or [""])[0].strip()
+            except Exception:
+                tid = ""
+            if not tid:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_id is required"})
+                return
+            try:
+                tpl = get_template(tid)
+                doc = export_template_to_doc_v1(tpl)
+                self._send_json(HTTPStatus.OK, {"template_doc": doc})
+                return
+            except KeyError:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown template_id: {tid}"})
+                return
+
         if parsed.path == "/api/templates":
             items = []
             for tid in list_template_ids():
@@ -637,6 +696,119 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/template_preview":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Body must be valid JSON."})
+                return
+
+            tpl_doc = payload.get("template_doc")
+            query = str(payload.get("query") or "").strip()
+            if not isinstance(tpl_doc, dict):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_doc must be an object"})
+                return
+            if not query:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "query is required"})
+                return
+
+            use_ava = bool(payload.get("use_ava", False))
+            strict_validation = bool(payload.get("strict_validation", False))
+            force_precise = bool(payload.get("force_precise", False))
+            developer_mode = bool(payload.get("developer_mode", False))
+            thread_id = str(payload.get("thread_id") or "").strip()
+            app_user_id = str(payload.get("app_user_id") or "").strip()
+
+            try:
+                validate_template_doc_v1(tpl_doc)
+                tpl = template_from_doc_v1(tpl_doc)
+                slots = extract_template_slots(query, tpl)
+                missing = missing_required_slots(tpl, slots)
+                # Preview/forced-template UX: accept shorthand like "119 Q2 2021".
+                if ("buyer" in missing or slots.get("buyer_id") is None) and isinstance(slots, dict):
+                    loose = _loose_buyer_id_from_query(query)
+                    if loose is not None:
+                        slots["buyer_id"] = loose
+                        missing = missing_required_slots(tpl, slots)
+                want_listing = explicit_listing_requested(query)
+                data_blocks = []
+                for block in tpl.data_blocks:
+                    if block.requires_explicit_user_request:
+                        status = "selected" if want_listing else "skipped_not_requested"
+                    elif block.block_id in tpl.disallowed_without_explicit_request:
+                        status = "skipped"
+                    else:
+                        status = "selected"
+                    row = {"status": status, **block.__dict__}
+                    data_blocks.append(row)
+
+                plan = {
+                    "kind": "saved_report_plan_v1",
+                    "contract_version": "ui_template_preview_v1",
+                    "template_id": str(tpl.template_id),
+                    "display_name": tpl.display_name,
+                    "purpose": tpl.purpose,
+                    "slots": slots,
+                    "missing_required_slots": missing,
+                    "section_order": list(tpl.section_order),
+                    "phrasing_rules": list(tpl.phrasing_rules),
+                    "prompt_modules": list(tpl.prompt_modules),
+                    "data_blocks": data_blocks,
+                    "ready_to_execute": len(missing) == 0,
+                    "forced_template": True,
+                    "preview_template": True,
+                }
+
+                if not plan["ready_to_execute"]:
+                    clar = saved_report_clarification_response(
+                        query=query,
+                        executed_query=query,
+                        thread_id=thread_id,
+                        app_user_id=app_user_id,
+                        plan=plan,
+                    )
+                    attach_structured_payload(clar, developer_mode)
+                    self._send_json(int(HTTPStatus.OK), clar)
+                    return
+
+                out = execute_saved_report_plan(
+                    query,
+                    plan,
+                    use_ava=use_ava,
+                    strict_validation=strict_validation,
+                    thread_id=thread_id,
+                    app_user_id=app_user_id,
+                    force_precise=force_precise,
+                )
+                response = {
+                    "query": query,
+                    "executed_query": query,
+                    "thread_id": thread_id,
+                    "app_user_id": app_user_id,
+                    "display_text": (out.get("phrasing") or {}).get("text", ""),
+                    "phrasing_mode": (out.get("phrasing") or {}).get("mode", "unknown"),
+                    "source_mode": (out.get("final_response") or {}).get("mode", "unknown"),
+                    "selected_handler": out.get("selected_handler"),
+                    "report_template_id": plan.get("template_id"),
+                    "force_precise": force_precise,
+                    "raw": out,
+                }
+                attach_structured_payload(response, developer_mode)
+                # Preview UI relies on template order. Ensure it is always present
+                # even if the executor didn't echo it into execution_plan.
+                if isinstance(response.get("structured_report"), dict) and isinstance(plan.get("section_order"), list):
+                    response["structured_report"]["section_order"] = list(plan.get("section_order") or [])
+                self._send_json(int(HTTPStatus.OK), response)
+                return
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Template preview failed", "details": str(exc)},
+                )
+                return
+
         if parsed.path == "/api/export/xlsx":
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""
