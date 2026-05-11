@@ -24,7 +24,11 @@ from scripts.reporting.structured_report_v1 import (
     build_structured_report,
     build_structured_report_from_ui_fallback,
 )
-from scripts.templates.template_docs_v1 import template_from_doc_v1, validate_template_doc_v1
+from scripts.templates.template_docs_v1 import (
+    resolve_templates_dir,
+    template_from_doc_v1,
+    validate_template_doc_v1,
+)
 from scripts.templates.template_docs_v1 import export_template_to_doc_v1
 from scripts.templates.template_matcher_v1 import (
     explicit_listing_requested,
@@ -696,6 +700,122 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/templates/unpublish":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Body must be valid JSON."})
+                return
+
+            tid = str(payload.get("template_id") or "").strip()
+            if not tid:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_id is required"})
+                return
+            if not re.match(r"^[A-Za-z0-9_-]+$", tid):
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "template_id must be [A-Za-z0-9_-] only"},
+                )
+                return
+
+            templates_dir = resolve_templates_dir()
+            path = templates_dir / f"{tid}.json"
+            if not path.exists():
+                # Safety: if there is no JSON file, we won't touch built-in templates.
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "No published JSON template found for this template_id", "template_id": tid},
+                )
+                return
+
+            try:
+                path.unlink()
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Unable to delete template file", "details": str(exc)},
+                )
+                return
+
+            # Best-effort: remove from in-memory registry too.
+            try:
+                import scripts.templates.saved_report_templates_v1 as _reg
+
+                if tid in _reg.SAVED_REPORT_TEMPLATES:
+                    del _reg.SAVED_REPORT_TEMPLATES[tid]
+            except Exception:
+                pass
+
+            self._send_json(HTTPStatus.OK, {"status": "unpublished", "template_id": tid})
+            return
+
+        if parsed.path == "/api/templates/publish":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Body must be valid JSON."})
+                return
+
+            tpl_doc = payload.get("template_doc")
+            overwrite = bool(payload.get("overwrite", False))
+            if not isinstance(tpl_doc, dict):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_doc must be an object"})
+                return
+
+            try:
+                validate_template_doc_v1(tpl_doc)
+                tid = str(tpl_doc.get("template_id") or "").strip()
+                if not tid or not re.match(r"^[A-Za-z0-9_-]+$", tid):
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "template_id must be [A-Za-z0-9_-] only"},
+                    )
+                    return
+
+                templates_dir = resolve_templates_dir()
+                templates_dir.mkdir(parents=True, exist_ok=True)
+                out_path = templates_dir / f"{tid}.json"
+                if out_path.exists() and not overwrite:
+                    self._send_json(
+                        HTTPStatus.CONFLICT,
+                        {"error": "Template already exists", "template_id": tid},
+                    )
+                    return
+
+                out_path.write_text(
+                    json.dumps(tpl_doc, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                # Hot-load into in-memory registry so users don't need a restart.
+                try:
+                    import scripts.templates.saved_report_templates_v1 as _reg
+
+                    _reg.SAVED_REPORT_TEMPLATES[tid] = template_from_doc_v1(tpl_doc)
+                except Exception:
+                    pass
+
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "published",
+                        "template_id": tid,
+                        "path": str(out_path),
+                        "overwrite": overwrite,
+                    },
+                )
+                return
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Template publish failed", "details": str(exc)},
+                )
+                return
+
         if parsed.path == "/api/template_preview":
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""

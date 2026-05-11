@@ -276,6 +276,8 @@
                 <option value="" selected>Custom (builder state)</option>
               </select>
             </label>
+            <button id="builderDeleteLocalBtn" type="button" class="btn-mini danger" style="margin-left:8px; display:none;">Delete local</button>
+            <button id="builderUnpublishBtn" type="button" class="btn-mini danger" style="margin-left:6px; display:none;">Unpublish</button>
           </div>
           <div id="builderBaseHelp" class="small" style="margin-top:-6px;"></div>
           <div class="row" style="margin:0;">
@@ -310,6 +312,7 @@
 
           <div class="row" style="margin:0;">
             <button id="builderSaveBtn" type="button" style="background:#111827;">Save JSON</button>
+            <button id="builderPublishBtn" type="button" style="background:#7c3aed;">Publish template</button>
             <button id="builderRunBtn" type="button" style="background:#2563eb;">Run preview</button>
             <label class="meta" style="font-size:12px; display:flex; gap:8px; align-items:center;">
               Load JSON:
@@ -348,6 +351,8 @@
     const templateBuilder = document.getElementById("templateBuilder");
     const builderBaseTemplate = document.getElementById("builderBaseTemplate");
     const builderBaseHelp = document.getElementById("builderBaseHelp");
+    const builderDeleteLocalBtn = document.getElementById("builderDeleteLocalBtn");
+    const builderUnpublishBtn = document.getElementById("builderUnpublishBtn");
     const builderTemplateId = document.getElementById("builderTemplateId");
     const builderDisplayName = document.getElementById("builderDisplayName");
     const builderPurpose = document.getElementById("builderPurpose");
@@ -355,6 +360,7 @@
     const builderAddBtn = document.getElementById("builderAddBtn");
     const builderSectionsEl = document.getElementById("builderSections");
     const builderSaveBtn = document.getElementById("builderSaveBtn");
+    const builderPublishBtn = document.getElementById("builderPublishBtn");
     const builderRunBtn = document.getElementById("builderRunBtn");
     const builderLoadFile = document.getElementById("builderLoadFile");
     const builderStatus = document.getElementById("builderStatus");
@@ -363,8 +369,10 @@
     const STORAGE_USER_KEY = "ava_db_rag_app_user_id";
     const STORAGE_FORCE_PRECISE_KEY = "ava_db_rag_force_precise";
     const STORAGE_DEVELOPER_KEY = "ava_db_rag_developer_mode";
+    const STORAGE_SAVED_TEMPLATE_DOCS_KEY = "ava_db_rag_saved_template_docs_v1";
     let isSending = false;
     let templateMeta = {}; // template_id -> {display_name, purpose}
+    let localTemplateDocs = {}; // template_id -> template_doc
     let builderSections = []; // array of section keys
 
     // If the UI is opened via file://, relative fetches to /api/* will fail.
@@ -379,6 +387,41 @@
 
     function randomId(prefix) {
       return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function loadLocalTemplateDocs() {
+      try {
+        const raw = localStorage.getItem(STORAGE_SAVED_TEMPLATE_DOCS_KEY) || "";
+        if (!raw) return {};
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj !== "object") return {};
+        return obj;
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function saveLocalTemplateDocs(docs) {
+      try {
+        localStorage.setItem(STORAGE_SAVED_TEMPLATE_DOCS_KEY, JSON.stringify(docs || {}));
+      } catch (e) {}
+    }
+
+    function upsertLocalTemplateDoc(doc) {
+      if (!doc || typeof doc !== "object") return;
+      const tid = String(doc.template_id || "").trim();
+      if (!tid) return;
+      const docs = loadLocalTemplateDocs();
+      docs[tid] = doc;
+      saveLocalTemplateDocs(docs);
+      localTemplateDocs = docs;
+    }
+
+    function localTemplateLabel(doc) {
+      const dn = String((doc && doc.display_name) || "").trim();
+      const tid = String((doc && doc.template_id) || "").trim();
+         if (tid && dn && dn !== tid) return `${tid} — ${dn}`;
+      return tid || dn || "Saved template";
     }
 
     function initIdentityFields() {
@@ -432,6 +475,32 @@
       builderBaseHelp.textContent = purpose ? `${dn}: ${purpose}` : `${dn}`;
     }
 
+    function updateCustomBuilderOptionLabel() {
+      if (!builderBaseTemplate || !builderBaseTemplate.options || !builderBaseTemplate.options.length) return;
+      const opt0 = builderBaseTemplate.options[0];
+      if (!opt0 || String(opt0.value || "") !== "") return;
+      const dn = String(builderDisplayName && builderDisplayName.value || "").trim();
+      opt0.textContent = dn ? `Custom (builder state): ${dn}` : "Custom (builder state)";
+    }
+
+    async function updateTemplateActionButtons() {
+      const tid = (builderBaseTemplate && builderBaseTemplate.value) ? String(builderBaseTemplate.value || "").trim() : "";
+      const isLocal = !!(tid && localTemplateDocs && localTemplateDocs[tid]);
+      if (builderDeleteLocalBtn) builderDeleteLocalBtn.style.display = isLocal ? "inline-block" : "none";
+      if (!builderUnpublishBtn) return;
+      if (!tid) {
+        builderUnpublishBtn.style.display = "none";
+        return;
+      }
+      // Show Unpublish only when a published JSON file exists on the server.
+      try {
+        const res = await fetch(`${API_BASE}/api/templates/doc?template_id=${encodeURIComponent(tid)}`, { method: "GET" });
+        builderUnpublishBtn.style.display = res.ok ? "inline-block" : "none";
+      } catch (e) {
+        builderUnpublishBtn.style.display = "none";
+      }
+    }
+
     function templateCategory(templateId) {
       const tid = String(templateId || "").toLowerCase();
       if (!tid) return "Other";
@@ -440,8 +509,22 @@
       return "Other";
     }
 
+    function templateCategoryFromMeta(templateId) {
+      const tid = String(templateId || "");
+      const base = templateCategory(tid);
+      if (base !== "Other") return base;
+      const meta = templateMeta[tid] || {};
+      const purpose = String(meta.purpose || "").toLowerCase();
+      if (purpose.includes("listing") || purpose.includes("rows")) return "Listings";
+      if (purpose.includes("performance") || purpose.includes("analysis")) return "Analysis";
+      return "Other";
+    }
+
     async function loadTemplatesIntoBuilderBase() {
       try {
+        // Load local saved docs first so they persist across refreshes.
+        localTemplateDocs = loadLocalTemplateDocs();
+
         const res = await fetch(`${API_BASE}/api/templates`);
         if (!res.ok) return;
         const data = await res.json();
@@ -460,6 +543,27 @@
           return og;
         }
 
+        // Local saved templates (browser only)
+        const savedKeys = Object.keys(localTemplateDocs || {}).sort();
+        if (savedKeys.length) {
+          const og = document.createElement("optgroup");
+          og.label = "Saved (local)";
+          builderBaseTemplate.appendChild(og);
+          for (const tid of savedKeys) {
+            const doc = localTemplateDocs[tid];
+            if (!doc || typeof doc !== "object") continue;
+            const opt = document.createElement("option");
+            opt.value = tid;
+            opt.textContent = localTemplateLabel(doc);
+            og.appendChild(opt);
+            // Also expose metadata so the faint description line updates without a fetch.
+            templateMeta[tid] = {
+              display_name: localTemplateLabel(doc),
+              purpose: String(doc.purpose || "").trim(),
+            };
+          }
+        }
+
         for (const t of items) {
           if (!t || typeof t !== "object") continue;
           const tid = String(t.template_id || "").trim();
@@ -469,11 +573,13 @@
           templateMeta[tid] = { display_name: label, purpose };
           const opt = document.createElement("option");
           opt.value = tid;
-          // Keep dropdown short and scannable; details can live elsewhere if needed.
-          opt.textContent = label;
-          getGroup(templateCategory(tid)).appendChild(opt);
+          // Always show stable id + friendly name so published customs are identifiable.
+          opt.textContent = (label && label !== tid) ? `${tid} — ${label}` : tid;
+          getGroup(templateCategoryFromMeta(tid)).appendChild(opt);
         }
+        updateCustomBuilderOptionLabel();
         updateBuilderBaseHelp();
+        updateTemplateActionButtons();
       } catch (e) {}
     }
 
@@ -990,7 +1096,43 @@
       try {
         const doc = buildTemplateDocFromBuilder();
         downloadJson(`${doc.template_id}.json`, doc);
-        setBuilderStatus("Saved JSON template doc.");
+        // Also persist locally so it appears in the base-template dropdown after refresh.
+        upsertLocalTemplateDoc(doc);
+        // Refresh dropdown immediately (no server restart needed).
+        loadTemplatesIntoBuilderBase();
+        setBuilderStatus("Saved JSON template doc (downloaded + saved locally).");
+      } catch (e) {
+        setBuilderStatus(String(e));
+      }
+    });
+    builderPublishBtn.addEventListener("click", async () => {
+      try {
+        const doc = buildTemplateDocFromBuilder();
+        setBuilderStatus("Publishing template…");
+        async function publish(overwrite) {
+          const res = await fetch(`${API_BASE}/api/templates/publish`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ template_doc: doc, overwrite: !!overwrite }),
+          });
+          const data = await res.json().catch(() => ({}));
+          return { res, data };
+        }
+        let { res, data } = await publish(false);
+        if (res.status === 409) {
+          const ok = confirm(`Template '${doc.template_id}' already exists. Overwrite it?`);
+          if (!ok) {
+            setBuilderStatus("Publish cancelled.");
+            return;
+          }
+          ({ res, data } = await publish(true));
+        }
+        if (!res.ok) {
+          throw new Error(`${data.error || "Publish failed"}${data.details ? " | " + data.details : ""}`);
+        }
+        // Refresh template list so it appears under Listings/Analysis groups.
+        await loadTemplatesIntoBuilderBase();
+        setBuilderStatus(`Published: ${data.template_id || doc.template_id}`);
       } catch (e) {
         setBuilderStatus(String(e));
       }
@@ -1099,6 +1241,13 @@
     builderPurpose.value = "Manager-defined listing report with fixed layout.";
     builderSections = ["opportunities_listing", "notes"];
     renderBuilderSections();
+    updateCustomBuilderOptionLabel();
+
+    if (builderDisplayName) {
+      builderDisplayName.addEventListener("input", () => {
+        updateCustomBuilderOptionLabel();
+      });
+    }
 
     function renderStructuredReport(sr, developerPayload, showDev) {
       if (!sr || typeof sr !== "object") {
@@ -1537,7 +1686,20 @@
       builderBaseTemplate.addEventListener("change", async () => {
         const tid = String(builderBaseTemplate.value || "").trim();
         updateBuilderBaseHelp();
+        updateTemplateActionButtons();
         if (!tid) return;
+        // If this is a locally-saved template doc, hydrate without fetching.
+        const localDoc = (localTemplateDocs && localTemplateDocs[tid]) ? localTemplateDocs[tid] : null;
+        if (localDoc) {
+          try {
+            hydrateBuilderFromDoc(localDoc);
+            setBuilderStatus(`Loaded local template: ${tid}`);
+            return;
+          } catch (e) {
+            // If local doc is malformed, fall through to server fetch.
+            console.error("Local template hydration failed", e);
+          }
+        }
         try {
           setBuilderStatus("Loading template…");
           const res = await fetch(`${API_BASE}/api/templates/doc?template_id=${encodeURIComponent(tid)}`);
@@ -1549,6 +1711,50 @@
         } catch (e) {
           console.error("Template hydration failed", e);
           setBuilderStatus(`Load failed: ${String(e)}. Is the server running at ${API_BASE}?`);
+        }
+      });
+    }
+
+    if (builderDeleteLocalBtn) {
+      builderDeleteLocalBtn.addEventListener("click", () => {
+        const tid = (builderBaseTemplate && builderBaseTemplate.value) ? String(builderBaseTemplate.value || "").trim() : "";
+        if (!tid) return;
+        const docs = loadLocalTemplateDocs();
+        if (!docs[tid]) return;
+        const ok = confirm(`Delete local template '${tid}' from this browser?`);
+        if (!ok) return;
+        delete docs[tid];
+        saveLocalTemplateDocs(docs);
+        localTemplateDocs = docs;
+        builderBaseTemplate.value = "";
+        updateBuilderBaseHelp();
+        loadTemplatesIntoBuilderBase();
+        setBuilderStatus(`Deleted local template: ${tid}`);
+      });
+    }
+
+    if (builderUnpublishBtn) {
+      builderUnpublishBtn.addEventListener("click", async () => {
+        const tid = (builderBaseTemplate && builderBaseTemplate.value) ? String(builderBaseTemplate.value || "").trim() : "";
+        if (!tid) return;
+        const ok = confirm(`Unpublish '${tid}' from the server? This deletes templates/saved_reports/${tid}.json`);
+        if (!ok) return;
+        try {
+          setBuilderStatus("Unpublishing…");
+          const res = await fetch(`${API_BASE}/api/templates/unpublish`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ template_id: tid }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(`${data.error || "Unpublish failed"}${data.details ? " | " + data.details : ""}`);
+          await loadTemplatesIntoBuilderBase();
+          builderBaseTemplate.value = "";
+          updateBuilderBaseHelp();
+          updateTemplateActionButtons();
+          setBuilderStatus(`Unpublished: ${tid}`);
+        } catch (e) {
+          setBuilderStatus(String(e));
         }
       });
     }
