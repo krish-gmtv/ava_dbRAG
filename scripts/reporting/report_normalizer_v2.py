@@ -14,6 +14,37 @@ from typing import Any, Dict, List, Literal, Optional
 
 BlockType = Literal["executive_summary", "kpi_table", "row_listing", "notes", "highlights"]
 
+# Column order for empty listing tables (export toolbar still renders).
+_LISTING_COLUMNS: Dict[str, List[str]] = {
+    "row_listing_upsheets": [
+        "upsheet_id",
+        "buyer_id",
+        "buyer_name",
+        "insert_date",
+        "status",
+        "vin",
+        "year",
+        "make",
+        "model",
+        "sold_date",
+        "delivered_date",
+        "sale_price",
+    ],
+    "row_listing_opportunities": [
+        "opportunity_id",
+        "upsheet_id",
+        "created_at",
+        "expected_amount",
+        "buyer_id",
+        "buyer_name",
+        "upsheet_status",
+        "upsheet_insert_date",
+        "delivered_date",
+        "sold_date",
+        "sale_price",
+    ],
+}
+
 
 @dataclass(frozen=True)
 class BlockOutput:
@@ -74,14 +105,27 @@ def normalize_saved_report_v2(
                 for k, v in snap.items():
                     kpi_snapshot[str(k)] = v
             rp = bo.payload.get("rows_preview") or []
-            if isinstance(rp, list) and rp:
-                cleaned = [r for r in rp if isinstance(r, dict)][:25]
-                if cleaned:
+            cleaned = (
+                [r for r in rp if isinstance(r, dict)][:25] if isinstance(rp, list) else []
+            )
+            title = bo.block_id.replace("_", " ").strip()
+            if cleaned:
+                row_preview_tables.append(
+                    {
+                        "block_id": bo.block_id,
+                        "title": title,
+                        "rows": cleaned,
+                    }
+                )
+            else:
+                cols = _LISTING_COLUMNS.get(bo.block_id)
+                if cols:
                     row_preview_tables.append(
                         {
                             "block_id": bo.block_id,
-                            "title": bo.block_id.replace("_", " ").strip(),
-                            "rows": cleaned,
+                            "title": title,
+                            "rows": [],
+                            "columns": cols,
                         }
                     )
             for n in (bo.payload.get("notes") or []):

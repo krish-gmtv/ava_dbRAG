@@ -1,3 +1,5 @@
+"""Batch contrast runs against execute_answer_with_ava (optional dev tool; not pytest)."""
+
 import argparse
 import csv
 import json
@@ -6,8 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHUNKS = ROOT / "KPIs" / "large_seed_res" / "buyer_quarterly_chunks_v2_final.csv"
 EXEC_SCRIPT = ROOT / "scripts" / "execute_answer_with_ava_v1.py"
 
@@ -103,7 +104,6 @@ def main() -> None:
     if not rows:
         raise SystemExit("No rows loaded from chunks file.")
 
-    # Fixed baseline pair from your checks.
     b1_q1_2018 = pick_row(rows, buyer_id=1, year=2018, quarter=1)
     b3_q1_2018 = pick_row(rows, buyer_id=3, year=2018, quarter=1)
     best = top_value_row(rows)
@@ -127,7 +127,13 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Running {len(queries)} contrast tests (use_ava={args.use_ava})")
-    print(f"Top value row: {best['buyer_name']} {best['period_label']} total_sale_value={best['total_sale_value']}" if best else "Top value row: not found")
+    if best:
+        print(
+            f"Top value row: {best['buyer_name']} {best['period_label']} "
+            f"total_sale_value={best['total_sale_value']}"
+        )
+    else:
+        print("Top value row: not found")
 
     with output_path.open("w", encoding="utf-8") as out:
         for i, q in enumerate(queries, start=1):
@@ -154,4 +160,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

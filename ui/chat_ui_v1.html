@@ -123,6 +123,21 @@
       border-radius: 8px;
     }
     .download-btn:hover { background: #0b1220; }
+    .download-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px 0;
+    }
+    .download-toolbar select.csv-split {
+      font-size: 12px;
+      padding: 4px 6px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      background: #fff;
+      color: #1f2937;
+    }
     ul.report-list {
       margin: 6px 0 0 18px;
       padding: 0;
@@ -279,6 +294,13 @@
             <button id="builderDeleteLocalBtn" type="button" class="btn-mini danger" style="margin-left:8px; display:none;">Delete local</button>
             <button id="builderUnpublishBtn" type="button" class="btn-mini danger" style="margin-left:6px; display:none;">Unpublish</button>
           </div>
+          <div class="row" id="builderRevisionRow" style="margin:0; align-items:center; display:none;">
+            <label class="meta" style="font-size:12px;">
+              Set active revision:
+              <select id="builderRevisionSelect" style="font-size:12px; padding:6px 8px; border-radius:8px; border:1px solid #d1d5db;"></select>
+            </label>
+            <button id="builderActivateRevisionBtn" type="button" class="btn-mini" style="margin-left:8px;">Activate</button>
+          </div>
           <div id="builderBaseHelp" class="small" style="margin-top:-6px;"></div>
           <div class="row" style="margin:0;">
             <input id="builderTemplateId" type="text" placeholder="template_id (e.g. buyer_custom_listing_v1)" />
@@ -307,6 +329,10 @@
           <div class="small">
             Fixed sections: <strong>Request summary</strong> (top) and <strong>Next steps</strong> (bottom).
           </div>
+          <p class="meta" style="margin:6px 0 10px 0; font-size:12px; line-height:1.45;">
+            <strong>KPI snapshot</strong> = aggregated metrics (Field/Value). <strong>Upsheets/Opportunities listing</strong> = raw Postgres rows with split export.
+            Run preview uses this canvas; chat uses the published revision when a template is selected.
+          </p>
 
           <ul id="builderSections" class="section-list"></ul>
 
@@ -353,6 +379,9 @@
     const builderBaseHelp = document.getElementById("builderBaseHelp");
     const builderDeleteLocalBtn = document.getElementById("builderDeleteLocalBtn");
     const builderUnpublishBtn = document.getElementById("builderUnpublishBtn");
+    const builderRevisionRow = document.getElementById("builderRevisionRow");
+    const builderRevisionSelect = document.getElementById("builderRevisionSelect");
+    const builderActivateRevisionBtn = document.getElementById("builderActivateRevisionBtn");
     const builderTemplateId = document.getElementById("builderTemplateId");
     const builderDisplayName = document.getElementById("builderDisplayName");
     const builderPurpose = document.getElementById("builderPurpose");
@@ -374,6 +403,7 @@
     let templateMeta = {}; // template_id -> {display_name, purpose}
     let localTemplateDocs = {}; // template_id -> template_doc
     let builderSections = []; // array of section keys
+    let builderServerTemplateId = ""; // published template currently linked from dropdown
 
     // If the UI is opened via file://, relative fetches to /api/* will fail.
     // Use an explicit base URL so Template Builder can still talk to the server.
@@ -472,7 +502,11 @@
       const meta = templateMeta[tid] || {};
       const dn = meta.display_name || tid;
       const purpose = meta.purpose || "";
-      builderBaseHelp.textContent = purpose ? `${dn}: ${purpose}` : `${dn}`;
+      const rev = Number(meta.active_revision || 0);
+      const revLine = rev > 0 ? ` Active revision: v${rev}.` : "";
+      builderBaseHelp.textContent = purpose
+        ? `${dn}: ${purpose}.${revLine} Revisions are files under this template id (not separate dropdown ids).`
+        : `${dn}.${revLine} Revisions are stored under this template id on the server.`;
     }
 
     function updateCustomBuilderOptionLabel() {
@@ -483,22 +517,97 @@
       opt0.textContent = dn ? `Custom (builder state): ${dn}` : "Custom (builder state)";
     }
 
+    async function refreshBuilderRevisionControls() {
+      if (!builderRevisionRow || !builderRevisionSelect) return;
+      const tid = (builderBaseTemplate && builderBaseTemplate.value)
+        ? String(builderBaseTemplate.value || "").trim()
+        : "";
+      if (!tid) {
+        builderRevisionRow.style.display = "none";
+        return;
+      }
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/templates/versions?template_id=${encodeURIComponent(tid)}`,
+        );
+        if (!res.ok) {
+          builderRevisionRow.style.display = "none";
+          return;
+        }
+        const vinfo = await res.json();
+        const revs = Array.isArray(vinfo.revisions) ? vinfo.revisions : [];
+        if (vinfo.versioning !== "revision_package" || revs.length < 2) {
+          builderRevisionRow.style.display = "none";
+          return;
+        }
+        builderRevisionSelect.innerHTML = "";
+        for (const r of revs) {
+          const opt = document.createElement("option");
+          opt.value = String(r.revision);
+          opt.textContent = r.is_active ? `v${r.revision} (active)` : `v${r.revision}`;
+          if (r.is_active) opt.selected = true;
+          builderRevisionSelect.appendChild(opt);
+        }
+        builderRevisionRow.style.display = "flex";
+      } catch (e) {
+        builderRevisionRow.style.display = "none";
+      }
+    }
+
     async function updateTemplateActionButtons() {
       const tid = (builderBaseTemplate && builderBaseTemplate.value) ? String(builderBaseTemplate.value || "").trim() : "";
       const isLocal = !!(tid && localTemplateDocs && localTemplateDocs[tid]);
       if (builderDeleteLocalBtn) builderDeleteLocalBtn.style.display = isLocal ? "inline-block" : "none";
-      if (!builderUnpublishBtn) return;
-      if (!tid) {
-        builderUnpublishBtn.style.display = "none";
-        return;
+      if (builderUnpublishBtn) {
+        if (!tid) {
+          builderUnpublishBtn.style.display = "none";
+        } else {
+          try {
+            const res = await fetch(`${API_BASE}/api/templates/doc?template_id=${encodeURIComponent(tid)}`, { method: "GET" });
+            builderUnpublishBtn.style.display = res.ok ? "inline-block" : "none";
+          } catch (e) {
+            builderUnpublishBtn.style.display = "none";
+          }
+        }
       }
-      // Show Unpublish only when a published JSON file exists on the server.
-      try {
-        const res = await fetch(`${API_BASE}/api/templates/doc?template_id=${encodeURIComponent(tid)}`, { method: "GET" });
-        builderUnpublishBtn.style.display = res.ok ? "inline-block" : "none";
-      } catch (e) {
-        builderUnpublishBtn.style.display = "none";
+      await refreshBuilderRevisionControls();
+    }
+
+    function selectedPublishedTemplateId() {
+      return String(builderBaseTemplate && builderBaseTemplate.value || "").trim();
+    }
+
+    async function fetchPublishedTemplateDoc(tid) {
+      const res = await fetch(
+        `${API_BASE}/api/templates/doc?template_id=${encodeURIComponent(tid)}`,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load published template");
       }
+      return {
+        doc: data.template_doc,
+        loaded_revision: data.loaded_revision || data.active_revision,
+      };
+    }
+
+    /** Preview/chat: when a published template is selected, always use active revision from server. */
+    async function resolveTemplateDocForRun() {
+      const tid = selectedPublishedTemplateId();
+      if (tid) {
+        const { doc } = await fetchPublishedTemplateDoc(tid);
+        if (doc) return doc;
+      }
+      return buildTemplateDocFromBuilder();
+    }
+
+    async function loadPublishedTemplateIntoBuilder(tid) {
+      const { doc, loaded_revision } = await fetchPublishedTemplateDoc(tid);
+      hydrateBuilderFromDoc(doc);
+      builderServerTemplateId = tid;
+      const revMsg = loaded_revision ? ` (revision v${loaded_revision} active on server)` : "";
+      setBuilderStatus(`Loaded published template: ${tid}${revMsg}`);
+      return loaded_revision;
     }
 
     function templateCategory(templateId) {
@@ -570,11 +679,19 @@
           if (!tid) continue;
           const label = String(t.display_name || tid).trim();
           const purpose = String(t.purpose || "").trim();
-          templateMeta[tid] = { display_name: label, purpose };
+          const activeRev = Number(t.active_revision || 0);
+          const revCount = Number(t.revisions_count || 0);
+          templateMeta[tid] = {
+            display_name: label,
+            purpose,
+            active_revision: activeRev || null,
+            revisions_count: revCount || null,
+          };
           const opt = document.createElement("option");
           opt.value = tid;
-          // Always show stable id + friendly name so published customs are identifiable.
-          opt.textContent = (label && label !== tid) ? `${tid} — ${label}` : tid;
+          const revHint =
+            activeRev > 0 ? ` · v${activeRev} active${revCount > 1 ? ` (${revCount} revisions)` : ""}` : "";
+          opt.textContent = (label && label !== tid) ? `${tid} — ${label}${revHint}` : `${tid}${revHint}`;
           getGroup(templateCategoryFromMeta(tid)).appendChild(opt);
         }
         updateCustomBuilderOptionLabel();
@@ -739,6 +856,11 @@
 
       const keys = Array.from(buckets.keys()).sort();
       if (keys.length <= 1) {
+        if (splitMode && splitMode !== "none" && (rows || []).length > 1) {
+          alert(
+            "Split export produced one file: all rows share the same period, or no usable date column was found.",
+          );
+        }
         downloadCsv(`${filenamePrefix}.csv`, columns, rows);
         return;
       }
@@ -1030,6 +1152,8 @@
       for (const s of sectionOrder) {
         if (s === "executive_summary") next.push("executive_summary");
         else if (s === "kpi_snapshot") next.push("kpi_snapshot");
+        else if (s === "upsheets_listing") next.push("upsheets_listing");
+        else if (s === "opportunities_listing") next.push("opportunities_listing");
         else if (s === "notes") next.push("notes");
       }
 
@@ -1109,40 +1233,59 @@
       try {
         const doc = buildTemplateDocFromBuilder();
         setBuilderStatus("Publishing template…");
-        async function publish(overwrite) {
+        async function publish(versionPolicy) {
           const res = await fetch(`${API_BASE}/api/templates/publish`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ template_doc: doc, overwrite: !!overwrite }),
+            body: JSON.stringify({
+              template_doc: doc,
+              version_policy: versionPolicy || "new_revision",
+            }),
           });
           const data = await res.json().catch(() => ({}));
           return { res, data };
         }
-        let { res, data } = await publish(false);
-        if (res.status === 409) {
-          const ok = confirm(`Template '${doc.template_id}' already exists. Overwrite it?`);
-          if (!ok) {
-            setBuilderStatus("Publish cancelled.");
-            return;
+        let versionPolicy = "new_revision";
+        try {
+          const vres = await fetch(
+            `${API_BASE}/api/templates/versions?template_id=${encodeURIComponent(doc.template_id)}`,
+          );
+          if (vres.ok) {
+            const vinfo = await vres.json();
+            const active = Number(vinfo.active_revision || 0);
+            const count = Array.isArray(vinfo.revisions) ? vinfo.revisions.length : 0;
+            if (count > 0) {
+              const replace = confirm(
+                `Template '${doc.template_id}' is already published (active revision v${active}, ${count} total).\n\n` +
+                  `OK = Publish new revision (v${active + 1})\n` +
+                  `Cancel = Replace active revision (v${active}) in place`,
+              );
+              versionPolicy = replace ? "new_revision" : "replace_active";
+            }
           }
-          ({ res, data } = await publish(true));
+        } catch (e) {
+          // First publish — keep new_revision.
         }
+        const { res, data } = await publish(versionPolicy);
         if (!res.ok) {
           throw new Error(`${data.error || "Publish failed"}${data.details ? " | " + data.details : ""}`);
         }
-        // Refresh template list so it appears under Listings/Analysis groups.
         await loadTemplatesIntoBuilderBase();
-        setBuilderStatus(`Published: ${data.template_id || doc.template_id}`);
+        const rev = data.revision || data.active_revision;
+        const suffix = rev ? ` @ revision v${rev}` : "";
+        setBuilderStatus(`Published: ${data.template_id || doc.template_id}${suffix}`);
       } catch (e) {
         setBuilderStatus(String(e));
       }
     });
     builderRunBtn.addEventListener("click", async () => {
       try {
-        const doc = buildTemplateDocFromBuilder();
         const q = String(queryInput.value || "").trim();
         if (!q) throw new Error('Type input like "119 Q2 2021" in the main box first.');
         setBuilderStatus("Running preview…");
+        const linkedTid = selectedPublishedTemplateId();
+        // Preview always uses the current builder canvas (not the last published revision).
+        const doc = buildTemplateDocFromBuilder();
         const res = await fetch(`${API_BASE}/api/template_preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1161,6 +1304,11 @@
         if (!res.ok) {
           throw new Error(`${data.error || "Preview failed"}${data.details ? " | " + data.details : ""}`);
         }
+        if (linkedTid) {
+          setBuilderStatus(
+            `Preview used builder layout for ${linkedTid} (publish to save this layout to the server).`,
+          );
+        }
         const showDev = developerModeInput.checked;
         let footerMeta = "";
         if (showDev) {
@@ -1176,45 +1324,7 @@
           showDev
         );
         const botDiv = appendBotReportHtml(reportHtml, footerMeta);
-        // Reuse the same download handlers as /api/chat messages.
-        botDiv.querySelectorAll("button.download-btn").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            const isKpi = btn.getAttribute("data-kpi") === "1";
-            if (isKpi) {
-              const kpiId = btn.getAttribute("data-kpi-id") || "";
-              const table = botDiv.querySelector(`table[data-kpi-id='${cssEscape(kpiId)}']`);
-              if (!table) return;
-              const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
-              const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
-              const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "preview";
-              const prefix = `${tpl}_kpi_snapshot`.replace(/\.csv$/i, "");
-              const wantXlsx = btn.getAttribute("data-xlsx") === "1";
-              if (wantXlsx) {
-                downloadXlsx({ filename: `${prefix}.xlsx`, columns: cols, rows, splitMode: "none", dateColIdx: -1 }).catch((e) => alert(String(e)));
-              } else {
-                downloadCsv(`${prefix}.csv`, cols, rows);
-              }
-              return;
-            }
-            const csvId = btn.getAttribute("data-csv-id") || "";
-            const title = btn.getAttribute("data-csv-title") || "rows";
-            const table = botDiv.querySelector(`table[data-csv-id='${cssEscape(csvId)}']`);
-            if (!table) return;
-            const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
-            const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
-            const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "preview";
-            const splitSel = botDiv.querySelector(`select.csv-split[data-csv-id='${cssEscape(csvId)}']`);
-            const splitMode = splitSel ? String(splitSel.value || "none") : "none";
-            const dateColIdx = pickBestDateColumn(cols);
-            const prefix = `${tpl}_${title}`.replace(/\.csv$/i, "");
-            const wantXlsx = btn.getAttribute("data-xlsx") === "1";
-            if (wantXlsx) {
-              downloadXlsx({ filename: `${prefix}.xlsx`, columns: cols, rows, splitMode, dateColIdx }).catch((e) => alert(String(e)));
-            } else {
-              downloadCsvSplit({ filenamePrefix: prefix, columns: cols, rows, splitMode, dateColIdx });
-            }
-          });
-        });
+        wireReportDownloadButtons(botDiv, data.structured_report);
         setBuilderStatus("Preview complete.");
       } catch (e) {
         setBuilderStatus(String(e));
@@ -1239,13 +1349,222 @@
     builderTemplateId.value = "buyer_custom_listing_report_v1";
     builderDisplayName.value = "Custom listing report";
     builderPurpose.value = "Manager-defined listing report with fixed layout.";
-    builderSections = ["opportunities_listing", "notes"];
+    builderSections = ["upsheets_listing", "opportunities_listing", "kpi_snapshot", "notes"];
     renderBuilderSections();
     updateCustomBuilderOptionLabel();
 
     if (builderDisplayName) {
       builderDisplayName.addEventListener("input", () => {
         updateCustomBuilderOptionLabel();
+      });
+    }
+
+    function encodeTablePayload(obj) {
+      return encodeURIComponent(JSON.stringify(obj));
+    }
+
+    function decodeTablePayload(raw) {
+      try {
+        return JSON.parse(decodeURIComponent(raw || ""));
+      } catch (e) {
+        try {
+          return JSON.parse(raw || "[]");
+        } catch (e2) {
+          return [];
+        }
+      }
+    }
+
+    const LISTING_COLUMN_SCHEMAS = {
+      opportunities: [
+        "opportunity_id",
+        "upsheet_id",
+        "created_at",
+        "expected_amount",
+        "buyer_id",
+        "buyer_name",
+        "upsheet_status",
+        "upsheet_insert_date",
+        "delivered_date",
+        "sold_date",
+        "sale_price",
+      ],
+      upsheets: [
+        "upsheet_id",
+        "buyer_id",
+        "buyer_name",
+        "insert_date",
+        "status",
+        "vin",
+        "year",
+        "make",
+        "model",
+        "sold_date",
+        "delivered_date",
+        "sale_price",
+      ],
+    };
+
+    function kpiMetricValue(sec, metricKey) {
+      if (!sec || !Array.isArray(sec.kpi_table)) return null;
+      const row = sec.kpi_table.find((r) => String(r.metric_key) === String(metricKey));
+      if (!row) return null;
+      const v = row.value;
+      if (v === null || v === undefined || v === "") return null;
+      return v;
+    }
+
+    /** When SQL returns 0 rows, older servers may omit row_preview_tables; infer from KPI metrics. */
+    function listingTablesForSection(sec, sectionKey) {
+      const tables = Array.isArray(sec.row_preview_tables) ? sec.row_preview_tables : [];
+      const want = sectionKey === "upsheets_listing" ? "upsheet" : "opportunit";
+      const picked = tables.filter((t) => {
+        const title = (t && t.title) ? String(t.title).toLowerCase() : "";
+        return title.includes(want);
+      });
+      if (picked.length) return picked;
+      if (sectionKey === "opportunities_listing") {
+        const n = kpiMetricValue(sec, "total_opportunities");
+        if (n !== null && !Number.isNaN(Number(n))) {
+          return [
+            {
+              title: "row listing opportunities",
+              table: {
+                columns: LISTING_COLUMN_SCHEMAS.opportunities,
+                rows: [],
+              },
+            },
+          ];
+        }
+      }
+      if (sectionKey === "upsheets_listing") {
+        const n = kpiMetricValue(sec, "total_upsheets");
+        if (n !== null && !Number.isNaN(Number(n))) {
+          return [
+            {
+              title: "row listing upsheets",
+              table: {
+                columns: LISTING_COLUMN_SCHEMAS.upsheets,
+                rows: [],
+              },
+            },
+          ];
+        }
+      }
+      return [];
+    }
+
+    function appendRowListingTableHtml(parts, title, cols, rows) {
+      if (!cols || !cols.length) return null;
+      const displayRows = Array.isArray(rows) && rows.length
+        ? rows
+        : [cols.map(() => "—")];
+      const csvId = `csv-${Math.random().toString(36).slice(2, 10)}`;
+      const fileSafeTitle = String(title || "Row preview")
+        .replace(/[^\w\- ]+/g, "")
+        .trim()
+        .replace(/\s+/g, "_") || "rows";
+      parts.push('<div class="report-section row-listing-section">');
+      parts.push(`<h3>${escapeHtml(String(title || "Row preview"))}</h3>`);
+      parts.push('<div class="download-toolbar">');
+      parts.push('<span class="meta">Split by:</span>');
+      parts.push(`<select class="csv-split" data-csv-id="${csvId}" aria-label="Split export by period">`);
+      parts.push('<option value="none" selected>None (single file)</option>');
+      parts.push('<option value="week">Week</option>');
+      parts.push('<option value="month">Month</option>');
+      parts.push('<option value="year">Year</option>');
+      parts.push("</select>");
+      parts.push(
+        `<button type="button" class="download-btn" data-xlsx="1" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}" style="background:#0f766e;">Download XLSX</button>`,
+      );
+      parts.push(
+        `<button type="button" class="download-btn" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}">Download CSV</button>`,
+      );
+      parts.push("</div>");
+      if (!Array.isArray(rows) || !rows.length) {
+        parts.push(
+          '<p class="meta" style="margin:0 0 8px 0;">No rows for this buyer and period. Split export still works when rows exist (use Upsheets listing if opportunities are empty).</p>',
+        );
+      }
+      parts.push(
+        `<table class="kpi-table" data-csv-id="${csvId}" data-cols="${encodeTablePayload(cols)}" data-rows="${encodeTablePayload(Array.isArray(rows) ? rows : [])}"><thead><tr>`,
+      );
+      for (const c of cols) {
+        parts.push(`<th>${escapeHtml(formatMetricKey(c))}</th>`);
+      }
+      parts.push("</tr></thead><tbody>");
+      for (const r of displayRows) {
+        parts.push("<tr>");
+        for (const cell of r) {
+          parts.push(`<td>${escapeHtml(cell)}</td>`);
+        }
+        parts.push("</tr>");
+      }
+      parts.push("</tbody></table></div>");
+      return csvId;
+    }
+
+    function wireReportDownloadButtons(botDiv, structuredReport) {
+      if (!botDiv) return;
+      const tpl =
+        structuredReport &&
+        structuredReport.sections &&
+        structuredReport.sections.template_id
+          ? structuredReport.sections.template_id
+          : "report";
+      botDiv.querySelectorAll("button.download-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const isKpi = btn.getAttribute("data-kpi") === "1";
+          if (isKpi) {
+            const kpiId = btn.getAttribute("data-kpi-id") || "";
+            const table = botDiv.querySelector(`table[data-kpi-id='${cssEscape(kpiId)}']`);
+            if (!table) return;
+            const cols = decodeTablePayload(table.getAttribute("data-cols"));
+            const rows = decodeTablePayload(table.getAttribute("data-rows"));
+            const prefix = `${tpl}_kpi_snapshot`.replace(/\.csv$/i, "");
+            const wantXlsx = btn.getAttribute("data-xlsx") === "1";
+            if (wantXlsx) {
+              downloadXlsx({
+                filename: `${prefix}.xlsx`,
+                columns: cols,
+                rows,
+                splitMode: "none",
+                dateColIdx: -1,
+              }).catch((e) => alert(String(e)));
+            } else {
+              downloadCsv(`${prefix}.csv`, cols, rows);
+            }
+            return;
+          }
+          const csvId = btn.getAttribute("data-csv-id") || "";
+          const title = btn.getAttribute("data-csv-title") || "rows";
+          const table = botDiv.querySelector(`table[data-csv-id='${cssEscape(csvId)}']`);
+          if (!table) return;
+          const cols = decodeTablePayload(table.getAttribute("data-cols"));
+          const rows = decodeTablePayload(table.getAttribute("data-rows"));
+          const splitSel = botDiv.querySelector(`select.csv-split[data-csv-id='${cssEscape(csvId)}']`);
+          const splitMode = splitSel ? String(splitSel.value || "none") : "none";
+          const dateColIdx = pickBestDateColumn(cols);
+          const prefix = `${tpl}_${title}`.replace(/\.csv$/i, "");
+          const wantXlsx = btn.getAttribute("data-xlsx") === "1";
+          if (wantXlsx) {
+            downloadXlsx({
+              filename: `${prefix}.xlsx`,
+              columns: cols,
+              rows,
+              splitMode,
+              dateColIdx,
+            }).catch((e) => alert(String(e)));
+          } else {
+            downloadCsvSplit({
+              filenamePrefix: prefix,
+              columns: cols,
+              rows,
+              splitMode,
+              dateColIdx,
+            });
+          }
+        });
       });
     }
 
@@ -1277,6 +1596,15 @@
           }
           parts.push("</tbody></table></div>");
         }
+        if (Array.isArray(sec.row_preview_tables) && sec.row_preview_tables.length) {
+          for (const t of sec.row_preview_tables) {
+            const title = (t && t.title) ? String(t.title) : "Row preview";
+            const table = (t && t.table) ? t.table : {};
+            const cols = Array.isArray(table.columns) ? table.columns : [];
+            const rows = Array.isArray(table.rows) ? table.rows : [];
+            appendRowListingTableHtml(parts, title, cols, rows);
+          }
+        }
         if (Array.isArray(sec.notes) && sec.notes.length) {
           parts.push('<div class="report-section"><h3>Notes</h3><ul class="report-list">');
           for (const n of sec.notes) {
@@ -1285,6 +1613,20 @@
           parts.push("</ul></div>");
         }
       } else if (kind === "saved_report") {
+        const renderedRowTables = new Set();
+
+        function renderRowPreviewTable(t, displayTitle) {
+          const title =
+            displayTitle || ((t && t.title) ? String(t.title) : "Row preview");
+          const table = (t && t.table) ? t.table : {};
+          const cols = Array.isArray(table.columns) ? table.columns : [];
+          const rows = Array.isArray(table.rows) ? table.rows : [];
+          const dedupeKey = `${title}|${cols.join("\x1f")}|${rows.length}`;
+          if (renderedRowTables.has(dedupeKey)) return;
+          renderedRowTables.add(dedupeKey);
+          appendRowListingTableHtml(parts, title, cols, rows);
+        }
+
         function renderSavedSection(key) {
           if (key === "request_summary" && sec.request_summary) {
             parts.push(`<div class="report-section"><h3>Request summary</h3><p>${escapeHtml(sec.request_summary)}</p></div>`);
@@ -1306,94 +1648,58 @@
                 <button class="download-btn" data-kpi="1" data-kpi-id="${kpiId}">Download CSV</button>
               </h3>`);
               const kpiRows = sec.kpi_table.map((r) => [formatMetricKey(r.metric_key), String(r.value ?? "")]);
-              parts.push(`<table class="kpi-table" data-kpi-id="${kpiId}" data-cols="${escapeHtml(JSON.stringify(["Field","Value"]))}" data-rows="${escapeHtml(JSON.stringify(kpiRows))}"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>`);
+              parts.push(`<table class="kpi-table" data-kpi-id="${kpiId}" data-cols="${encodeTablePayload(["Field", "Value"])}" data-rows="${encodeTablePayload(kpiRows)}"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>`);
               for (const row of sec.kpi_table) {
                 parts.push(`<tr><td>${escapeHtml(formatMetricKey(row.metric_key))}</td><td>${escapeHtml(row.value)}</td></tr>`);
               }
-              parts.push("</tbody></table></div>");
-            }
-            if (Array.isArray(sec.row_preview_tables) && sec.row_preview_tables.length) {
-              for (const t of sec.row_preview_tables) {
-                const title = (t && t.title) ? String(t.title) : "Row preview";
-                const table = (t && t.table) ? t.table : {};
-                const cols = Array.isArray(table.columns) ? table.columns : [];
-                const rows = Array.isArray(table.rows) ? table.rows : [];
-                if (!cols.length) continue;
-                const csvId = `csv-${Math.random().toString(36).slice(2, 10)}`;
-                const fileSafeTitle = title.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") || "rows";
-                parts.push(`<div class="report-section">`);
-                parts.push(`<h3>${escapeHtml(title)}
-                  <span class="meta" style="margin-left:8px;">Split by:</span>
-                  <select class="csv-split" data-csv-id="${csvId}" style="font-size:12px; padding:4px 6px; border-radius:8px; border:1px solid #d1d5db;">
-                    <option value="none" selected>None</option>
-                    <option value="week">Week</option>
-                    <option value="month">Month</option>
-                    <option value="year">Year</option>
-                  </select>
-                  <button class="download-btn" data-xlsx="1" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}" style="background:#0f766e;">Download XLSX</button>
-                  <button class="download-btn" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}">Download CSV</button>
-                </h3>`);
-                parts.push(`<table class="kpi-table" data-csv-id="${csvId}" data-cols="${escapeHtml(JSON.stringify(cols))}" data-rows="${escapeHtml(JSON.stringify(rows))}"><thead><tr>`);
-                for (const c of cols) {
-                  parts.push(`<th>${escapeHtml(formatMetricKey(c))}</th>`);
-                }
-                parts.push('</tr></thead><tbody>');
-                for (const r of rows) {
-                  parts.push('<tr>');
-                  for (const cell of r) {
-                    parts.push(`<td>${escapeHtml(cell)}</td>`);
-                  }
-                  parts.push('</tr>');
-                }
-                parts.push("</tbody></table></div>");
+              parts.push("</tbody></table>");
+              const listingKeys = (order || []).filter(
+                (k) => k === "upsheets_listing" || k === "opportunities_listing",
+              );
+              if (listingKeys.length) {
+                parts.push(
+                  '<p class="meta" style="margin-top:8px;">Week / month / year split export is on the <strong>row listing</strong> section below (not this metrics table).</p>',
+                );
               }
+              parts.push("</div>");
             }
             return;
           }
           if (key === "upsheets_listing" || key === "opportunities_listing") {
-            const want = key === "upsheets_listing" ? "upsheet" : "opportunit";
-            const tables = Array.isArray(sec.row_preview_tables) ? sec.row_preview_tables : [];
-            const picked = tables.filter((t) => {
-              const title = (t && t.title) ? String(t.title).toLowerCase() : "";
-              return title.includes(want);
-            });
-            if (!picked.length) return;
+            const picked = listingTablesForSection(sec, key);
             const heading = key === "upsheets_listing" ? "Upsheets listing" : "Opportunities listing";
-            parts.push(`<div class="report-section"><h3>${escapeHtml(heading)}</h3></div>`);
-            for (const t of picked) {
-              const title = (t && t.title) ? String(t.title) : "Row preview";
-              const table = (t && t.table) ? t.table : {};
-              const cols = Array.isArray(table.columns) ? table.columns : [];
-              const rows = Array.isArray(table.rows) ? table.rows : [];
-              if (!cols.length) continue;
-              const csvId = `csv-${Math.random().toString(36).slice(2, 10)}`;
-              const fileSafeTitle = title.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") || "rows";
-              parts.push(`<div class="report-section">`);
-              parts.push(`<h3>${escapeHtml(title)}
-                <span class="meta" style="margin-left:8px;">Split by:</span>
-                <select class="csv-split" data-csv-id="${csvId}" style="font-size:12px; padding:4px 6px; border-radius:8px; border:1px solid #d1d5db;">
-                  <option value="none" selected>None</option>
-                  <option value="week">Week</option>
-                  <option value="month">Month</option>
-                  <option value="year">Year</option>
-                </select>
-                <button class="download-btn" data-xlsx="1" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}" style="background:#0f766e;">Download XLSX</button>
-                <button class="download-btn" data-csv-id="${csvId}" data-csv-title="${escapeHtml(fileSafeTitle)}">Download CSV</button>
-              </h3>`);
-              parts.push(`<table class="kpi-table" data-csv-id="${csvId}" data-cols="${escapeHtml(JSON.stringify(cols))}" data-rows="${escapeHtml(JSON.stringify(rows))}"><thead><tr>`);
-              for (const c of cols) {
-                parts.push(`<th>${escapeHtml(formatMetricKey(c))}</th>`);
-              }
-              parts.push('</tr></thead><tbody>');
-              for (const r of rows) {
-                parts.push('<tr>');
-                for (const cell of r) {
-                  parts.push(`<td>${escapeHtml(cell)}</td>`);
-                }
-                parts.push('</tr>');
-              }
-              parts.push("</tbody></table></div>");
+            parts.push('<div class="report-section listing-section">');
+            parts.push(`<h3>${escapeHtml(heading)}</h3>`);
+            parts.push(
+              '<p class="meta" style="margin:0 0 10px 0;">Row listing (Postgres). Not the KPI metrics table — split Week/Month/Year applies here.</p>',
+            );
+            if (!picked.length) {
+              parts.push(
+                '<p class="meta">Listing section is in your template but no row table was attached. In developer diagnostics, confirm <strong>row_listing_*</strong> under <code>template_block_runs</code>.</p></div>',
+              );
+              return;
             }
+            const oppCount = kpiMetricValue(sec, "total_opportunities");
+            const upCount = kpiMetricValue(sec, "total_upsheets");
+            if (
+              key === "opportunities_listing" &&
+              oppCount !== null &&
+              Number(oppCount) === 0
+            ) {
+              parts.push(
+                '<p class="meta" style="margin:0 0 8px 0;"><strong>0 opportunity rows</strong> for this buyer and quarter — SQL ran successfully. Filter: <code>opportunities.created_at</code>. Add <strong>Upsheets listing</strong> to export upsheet rows (you have 1 upsheet in KPIs).</p>',
+              );
+            } else if (
+              key === "upsheets_listing" &&
+              upCount !== null &&
+              Number(upCount) === 0
+            ) {
+              parts.push(
+                '<p class="meta" style="margin:0 0 8px 0;"><strong>0 upsheet rows</strong> in this date window.</p>',
+              );
+            }
+            for (const t of picked) renderRowPreviewTable(t, heading);
+            parts.push("</div>");
             return;
           }
           if (key === "highlights" && Array.isArray(sec.highlights) && sec.highlights.length) {
@@ -1414,6 +1720,16 @@
           for (const k of order) renderSavedSection(String(k || ""));
         } else {
           for (const k of ["request_summary","executive_summary","kpi_snapshot","highlights","notes","next_steps"]) renderSavedSection(k);
+        }
+        const listingSections = new Set(
+          (order || []).filter((k) => k === "upsheets_listing" || k === "opportunities_listing"),
+        );
+        if (
+          !listingSections.size &&
+          Array.isArray(sec.row_preview_tables) &&
+          sec.row_preview_tables.length
+        ) {
+          for (const t of sec.row_preview_tables) renderRowPreviewTable(t);
         }
         if (sec.template_id && showDev) {
           parts.push(`<div class="meta" style="margin-top:8px;">Template: ${escapeHtml(sec.template_id)}</div>`);
@@ -1558,6 +1874,7 @@
 
       const loadingMsg = appendMessage("bot", "Working...");
       try {
+        const forcedTemplateId = selectedPublishedTemplateId();
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1568,7 +1885,8 @@
             use_ava: useAvaInput.checked,
             strict_validation: strictValidationInput.checked,
             force_precise: forcePreciseInput.checked,
-            developer_mode: developerModeInput.checked
+            developer_mode: developerModeInput.checked,
+            ...(forcedTemplateId ? { template_id: forcedTemplateId } : {}),
           })
         });
         const data = await res.json();
@@ -1597,63 +1915,7 @@
           showDev
         );
         const botDiv = appendBotReportHtml(reportHtml, footerMeta);
-        // Attach CSV download handlers for any preview tables in this bot message.
-        botDiv.querySelectorAll("button.download-btn").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            const isKpi = btn.getAttribute("data-kpi") === "1";
-            if (isKpi) {
-              const kpiId = btn.getAttribute("data-kpi-id") || "";
-              const table = botDiv.querySelector(`table[data-kpi-id='${cssEscape(kpiId)}']`);
-              if (!table) return;
-              const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
-              const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
-              const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "report";
-              const prefix = `${tpl}_kpi_snapshot`.replace(/\.csv$/i, "");
-              const wantXlsx = btn.getAttribute("data-xlsx") === "1";
-              if (wantXlsx) {
-                downloadXlsx({
-                  filename: `${prefix}.xlsx`,
-                  columns: cols,
-                  rows,
-                  splitMode: "none",
-                  dateColIdx: -1,
-                }).catch((e) => alert(String(e)));
-              } else {
-                downloadCsv(`${prefix}.csv`, cols, rows);
-              }
-              return;
-            }
-            const csvId = btn.getAttribute("data-csv-id") || "";
-            const title = btn.getAttribute("data-csv-title") || "rows";
-            const table = botDiv.querySelector(`table[data-csv-id='${cssEscape(csvId)}']`);
-            if (!table) return;
-            const cols = JSON.parse(table.getAttribute("data-cols") || "[]");
-            const rows = JSON.parse(table.getAttribute("data-rows") || "[]");
-            const tpl = (data.structured_report && data.structured_report.sections && data.structured_report.sections.template_id) ? data.structured_report.sections.template_id : "report";
-            const splitSel = botDiv.querySelector(`select.csv-split[data-csv-id='${cssEscape(csvId)}']`);
-            const splitMode = splitSel ? String(splitSel.value || "none") : "none";
-            const dateColIdx = pickBestDateColumn(cols);
-            const prefix = `${tpl}_${title}`.replace(/\.csv$/i, "");
-            const wantXlsx = btn.getAttribute("data-xlsx") === "1";
-            if (wantXlsx) {
-              downloadXlsx({
-                filename: `${prefix}.xlsx`,
-                columns: cols,
-                rows,
-                splitMode,
-                dateColIdx,
-              }).catch((e) => alert(String(e)));
-            } else {
-              downloadCsvSplit({
-                filenamePrefix: prefix,
-                columns: cols,
-                rows,
-                splitMode,
-                dateColIdx,
-              });
-            }
-          });
-        });
+        wireReportDownloadButtons(botDiv, data.structured_report);
         if (!showDev && data.phrasing_mode === "deterministic_fallback") {
           const note = document.createElement("div");
           note.className = "phrasing-fallback-note";
@@ -1685,33 +1947,29 @@
     if (builderBaseTemplate) {
       builderBaseTemplate.addEventListener("change", async () => {
         const tid = String(builderBaseTemplate.value || "").trim();
+        builderServerTemplateId = "";
         updateBuilderBaseHelp();
         updateTemplateActionButtons();
         if (!tid) return;
-        // If this is a locally-saved template doc, hydrate without fetching.
+        try {
+          setBuilderStatus("Loading published template…");
+          await loadPublishedTemplateIntoBuilder(tid);
+          return;
+        } catch (e) {
+          console.warn("Published template load failed, trying local", e);
+        }
         const localDoc = (localTemplateDocs && localTemplateDocs[tid]) ? localTemplateDocs[tid] : null;
         if (localDoc) {
           try {
             hydrateBuilderFromDoc(localDoc);
+            builderServerTemplateId = "";
             setBuilderStatus(`Loaded local template: ${tid}`);
             return;
           } catch (e) {
-            // If local doc is malformed, fall through to server fetch.
             console.error("Local template hydration failed", e);
           }
         }
-        try {
-          setBuilderStatus("Loading template…");
-          const res = await fetch(`${API_BASE}/api/templates/doc?template_id=${encodeURIComponent(tid)}`);
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "Failed to load template doc");
-          const doc = data && data.template_doc ? data.template_doc : null;
-          hydrateBuilderFromDoc(doc);
-          setBuilderStatus(`Loaded base template: ${tid}`);
-        } catch (e) {
-          console.error("Template hydration failed", e);
-          setBuilderStatus(`Load failed: ${String(e)}. Is the server running at ${API_BASE}?`);
-        }
+        setBuilderStatus(`Load failed. Is the server running at ${API_BASE}?`);
       });
     }
 
@@ -1733,11 +1991,51 @@
       });
     }
 
+    if (builderActivateRevisionBtn) {
+      builderActivateRevisionBtn.addEventListener("click", async () => {
+        try {
+          const tid = (builderBaseTemplate && builderBaseTemplate.value)
+            ? String(builderBaseTemplate.value || "").trim()
+            : "";
+          const revision = Number(builderRevisionSelect && builderRevisionSelect.value);
+          if (!tid || !revision) throw new Error("Select a template and revision first.");
+          const ok = confirm(
+            `Set active revision to v${revision} for '${tid}'?\n\n` +
+              "Chat and preview will use that revision. Older revision files are kept on disk.",
+          );
+          if (!ok) return;
+          setBuilderStatus("Activating revision…");
+          const res = await fetch(`${API_BASE}/api/templates/activate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ template_id: tid, revision }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(`${data.error || "Activate failed"}${data.details ? " | " + data.details : ""}`);
+          }
+          await loadTemplatesIntoBuilderBase();
+          builderBaseTemplate.value = tid;
+          await loadPublishedTemplateIntoBuilder(tid);
+          await updateTemplateActionButtons();
+          setBuilderStatus(
+            `Active revision is now v${data.active_revision || revision} for ${tid}. ` +
+              "Run preview or chat will use this revision.",
+          );
+        } catch (e) {
+          setBuilderStatus(String(e));
+        }
+      });
+    }
+
     if (builderUnpublishBtn) {
       builderUnpublishBtn.addEventListener("click", async () => {
         const tid = (builderBaseTemplate && builderBaseTemplate.value) ? String(builderBaseTemplate.value || "").trim() : "";
         if (!tid) return;
-        const ok = confirm(`Unpublish '${tid}' from the server? This deletes templates/saved_reports/${tid}.json`);
+        const ok = confirm(
+          `Unpublish '${tid}' from the server? This removes the whole published package ` +
+            `(all revisions under templates/saved_reports/${tid}/).`,
+        );
         if (!ok) return;
         try {
           setBuilderStatus("Unpublishing…");

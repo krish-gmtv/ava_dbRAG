@@ -309,13 +309,19 @@ def execute_saved_report_plan(
         elif btype == "row_listing":
             listing_fr = fr
             snap = fr.get("kpi_snapshot") if isinstance(fr, dict) else {}
-            supporting = fr.get("supporting_details") if isinstance(fr, dict) else {}
-            first_preview = []
-            if isinstance(supporting, dict):
-                cand = supporting.get("first_rows_preview") or []
-                if isinstance(cand, list):
-                    # Keep preview small and deterministic.
-                    first_preview = cand[:25]
+            first_preview: List[Dict[str, Any]] = []
+            ho = rendered.get("handler_output") if isinstance(rendered, dict) else {}
+            hres = ho.get("result") if isinstance(ho, dict) else {}
+            if isinstance(hres, dict):
+                raw_rows = hres.get("rows") or []
+                if isinstance(raw_rows, list):
+                    first_preview = [r for r in raw_rows if isinstance(r, dict)][:25]
+            if not first_preview:
+                supporting = fr.get("supporting_details") if isinstance(fr, dict) else {}
+                if isinstance(supporting, dict):
+                    cand = supporting.get("first_rows_preview") or []
+                    if isinstance(cand, list):
+                        first_preview = [r for r in cand if isinstance(r, dict)][:25]
             block_outputs.append(
                 BlockOutput(
                     block_id=bid,

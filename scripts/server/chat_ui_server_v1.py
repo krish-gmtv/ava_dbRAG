@@ -20,6 +20,7 @@ from _bootstrap_repo_root import ensure_repo_root_on_syspath  # noqa: E402
 ROOT_DIR = ensure_repo_root_on_syspath()
 
 from scripts.reporting.structured_report_v1 import (
+    _preview_tables_to_sections,
     build_developer_diagnostics,
     build_structured_report,
     build_structured_report_from_ui_fallback,
@@ -42,6 +43,14 @@ from scripts.templates.template_report_orchestrator_v1 import (
     plan_saved_report_for_template,
 )
 from scripts.pipeline.chat_pipeline_v1 import process_chat_request
+from scripts.server.template_publish_v1 import (
+    activate_template_revision,
+    is_published_on_disk,
+    list_template_versions,
+    publish_template_versioned,
+    unpublish_template,
+)
+from scripts.templates.template_versions_v1 import load_active_template_doc, load_revision_doc
 from scripts.server.xlsx_export_v1 import build_xlsx_bytes
 
 SCRIPTS_DIR = ROOT_DIR / "scripts"
@@ -74,11 +83,24 @@ AFFIRM_WORDS = {"yes", "yeah", "yep", "sure", "ok", "okay", "do it", "go ahead"}
 def attach_structured_payload(resp: Dict[str, Any], developer_mode: bool) -> None:
     raw = resp.get("raw")
     if isinstance(raw, dict) and isinstance(raw.get("final_response"), dict):
-        resp["structured_report"] = build_structured_report(raw["final_response"])
+        fr = raw["final_response"]
+        # Prefer executor-built structured_report when present (same contract as build_structured_report).
+        sr = raw.get("structured_report")
+        if isinstance(sr, dict) and sr.get("report_kind"):
+            resp["structured_report"] = sr
+        else:
+            resp["structured_report"] = build_structured_report(fr)
         plan = raw.get("execution_plan") or {}
         if isinstance(plan, dict) and isinstance(plan.get("section_order"), list):
             # Optional UI hint: render sections in template order.
             resp["structured_report"]["section_order"] = plan.get("section_order")
+        # Keep row listing tables in sections even when preview payload was built on an older worker.
+        if str(fr.get("mode") or "").lower() == "saved_report":
+            fr_tables = fr.get("row_preview_tables")
+            if isinstance(fr_tables, list) and fr_tables:
+                sec = resp["structured_report"].setdefault("sections", {})
+                if not sec.get("row_preview_tables"):
+                    sec["row_preview_tables"] = _preview_tables_to_sections(fr_tables)
     else:
         resp["structured_report"] = build_structured_report_from_ui_fallback(
             display_text=str(resp.get("display_text") or ""),
@@ -652,31 +674,102 @@ class ChatHandler(BaseHTTPRequestHandler):
 
                 qs = parse_qs(parsed.query or "")
                 tid = (qs.get("template_id") or [""])[0].strip()
+                revision_raw = (qs.get("revision") or [""])[0].strip()
+            except Exception:
+                tid = ""
+                revision_raw = ""
+            if not tid:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_id is required"})
+                return
+            templates_dir = resolve_templates_dir()
+            loaded_revision: Optional[int] = None
+            active_revision: Optional[int] = None
+            try:
+                if revision_raw.isdigit():
+                    loaded_revision = int(revision_raw)
+                    doc = load_revision_doc(templates_dir, tid, loaded_revision)
+                elif is_published_on_disk(templates_dir, tid):
+                    doc = load_active_template_doc(templates_dir, tid)
+                    if doc is None:
+                        raise FileNotFoundError(f"No active template doc for {tid}")
+                    try:
+                        vinfo = list_template_versions(templates_dir, tid)
+                        active_revision = int(vinfo.get("active_revision") or 0) or None
+                        loaded_revision = active_revision
+                    except Exception:
+                        pass
+                else:
+                    tpl = get_template(tid)
+                    doc = export_template_to_doc_v1(tpl)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "template_doc": doc,
+                        "active_revision": active_revision,
+                        "loaded_revision": loaded_revision,
+                    },
+                )
+                return
+            except FileNotFoundError:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown template_id: {tid}"})
+                return
+            except KeyError:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown template_id: {tid}"})
+                return
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Unable to load template doc", "details": str(exc)},
+                )
+                return
+
+        if parsed.path == "/api/templates/versions":
+            try:
+                from urllib.parse import parse_qs
+
+                qs = parse_qs(parsed.query or "")
+                tid = (qs.get("template_id") or [""])[0].strip()
             except Exception:
                 tid = ""
             if not tid:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_id is required"})
                 return
             try:
-                tpl = get_template(tid)
-                doc = export_template_to_doc_v1(tpl)
-                self._send_json(HTTPStatus.OK, {"template_doc": doc})
+                info = list_template_versions(resolve_templates_dir(), tid)
+                self._send_json(HTTPStatus.OK, info)
                 return
-            except KeyError:
-                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown template_id: {tid}"})
+            except FileNotFoundError:
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "No published template found for this template_id", "template_id": tid},
+                )
+                return
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Unable to list template versions", "details": str(exc)},
+                )
                 return
 
         if parsed.path == "/api/templates":
+            templates_dir = resolve_templates_dir()
             items = []
             for tid in list_template_ids():
                 tpl = get_template(tid)
-                items.append(
-                    {
-                        "template_id": tid,
-                        "display_name": tpl.display_name,
-                        "purpose": tpl.purpose,
-                    }
-                )
+                row: Dict[str, Any] = {
+                    "template_id": tid,
+                    "display_name": tpl.display_name,
+                    "purpose": tpl.purpose,
+                }
+                if is_published_on_disk(templates_dir, tid):
+                    try:
+                        vinfo = list_template_versions(templates_dir, tid)
+                        row["active_revision"] = vinfo.get("active_revision")
+                        row["revisions_count"] = len(vinfo.get("revisions") or [])
+                        row["versioning"] = vinfo.get("versioning")
+                    except Exception:
+                        pass
+                items.append(row)
             self._send_json(HTTPStatus.OK, {"templates": items})
             return
         if parsed.path in ("/", "/chat"):
@@ -700,6 +793,61 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/templates/activate":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Body must be valid JSON."})
+                return
+
+            tid = str(payload.get("template_id") or "").strip()
+            revision_raw = payload.get("revision")
+            if not tid:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_id is required"})
+                return
+            if not re.match(r"^[A-Za-z0-9_-]+$", tid):
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "template_id must be [A-Za-z0-9_-] only"},
+                )
+                return
+            try:
+                revision = int(revision_raw)
+            except (TypeError, ValueError):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "revision must be an integer"})
+                return
+
+            templates_dir = resolve_templates_dir()
+            try:
+                result = activate_template_revision(templates_dir, tid, revision)
+                doc = load_active_template_doc(templates_dir, tid)
+                if doc is not None:
+                    try:
+                        import scripts.templates.saved_report_templates_v1 as _reg
+
+                        _reg.SAVED_REPORT_TEMPLATES[tid] = template_from_doc_v1(doc)
+                    except Exception:
+                        pass
+                self._send_json(HTTPStatus.OK, {"status": "activated", **result})
+                return
+            except FileNotFoundError:
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "No published template found for this template_id", "template_id": tid},
+                )
+                return
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Unable to activate template revision", "details": str(exc)},
+                )
+                return
+
         if parsed.path == "/api/templates/unpublish":
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""
@@ -721,25 +869,28 @@ class ChatHandler(BaseHTTPRequestHandler):
                 return
 
             templates_dir = resolve_templates_dir()
-            path = templates_dir / f"{tid}.json"
-            if not path.exists():
-                # Safety: if there is no JSON file, we won't touch built-in templates.
+            if not is_published_on_disk(templates_dir, tid):
                 self._send_json(
                     HTTPStatus.NOT_FOUND,
-                    {"error": "No published JSON template found for this template_id", "template_id": tid},
+                    {"error": "No published template found for this template_id", "template_id": tid},
                 )
                 return
 
             try:
-                path.unlink()
+                removed = unpublish_template(templates_dir, tid)
+            except FileNotFoundError:
+                self._send_json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "No published template found for this template_id", "template_id": tid},
+                )
+                return
             except Exception as exc:
                 self._send_json(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Unable to delete template file", "details": str(exc)},
+                    {"error": "Unable to unpublish template", "details": str(exc)},
                 )
                 return
 
-            # Best-effort: remove from in-memory registry too.
             try:
                 import scripts.templates.saved_report_templates_v1 as _reg
 
@@ -748,7 +899,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-            self._send_json(HTTPStatus.OK, {"status": "unpublished", "template_id": tid})
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "unpublished", "template_id": tid, **removed},
+            )
             return
 
         if parsed.path == "/api/templates/publish":
@@ -762,6 +916,16 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             tpl_doc = payload.get("template_doc")
             overwrite = bool(payload.get("overwrite", False))
+            version_policy = str(
+                payload.get("version_policy")
+                or ("replace_active" if overwrite else "new_revision")
+            ).strip().lower()
+            if version_policy not in ("new_revision", "replace_active"):
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "version_policy must be 'new_revision' or 'replace_active'"},
+                )
+                return
             if not isinstance(tpl_doc, dict):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "template_doc must be an object"})
                 return
@@ -777,25 +941,18 @@ class ChatHandler(BaseHTTPRequestHandler):
                     return
 
                 templates_dir = resolve_templates_dir()
-                templates_dir.mkdir(parents=True, exist_ok=True)
-                out_path = templates_dir / f"{tid}.json"
-                if out_path.exists() and not overwrite:
-                    self._send_json(
-                        HTTPStatus.CONFLICT,
-                        {"error": "Template already exists", "template_id": tid},
-                    )
-                    return
-
-                out_path.write_text(
-                    json.dumps(tpl_doc, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
+                pub = publish_template_versioned(
+                    templates_dir,
+                    tpl_doc,
+                    version_policy=version_policy,  # type: ignore[arg-type]
                 )
+                tid = str(pub["template_id"])
 
-                # Hot-load into in-memory registry so users don't need a restart.
                 try:
                     import scripts.templates.saved_report_templates_v1 as _reg
 
-                    _reg.SAVED_REPORT_TEMPLATES[tid] = template_from_doc_v1(tpl_doc)
+                    active_doc = load_active_template_doc(templates_dir, tid) or tpl_doc
+                    _reg.SAVED_REPORT_TEMPLATES[tid] = template_from_doc_v1(active_doc)
                 except Exception:
                     pass
 
@@ -804,8 +961,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                     {
                         "status": "published",
                         "template_id": tid,
-                        "path": str(out_path),
-                        "overwrite": overwrite,
+                        "revision": pub.get("revision"),
+                        "active_revision": pub.get("active_revision"),
+                        "revisions_count": pub.get("revisions_count"),
+                        "version_policy": pub.get("version_policy"),
+                        "path": pub.get("path"),
+                        "migrated_from_legacy": pub.get("migrated_from_legacy"),
+                        "created_new_revision": pub.get("created_new_revision"),
                     },
                 )
                 return

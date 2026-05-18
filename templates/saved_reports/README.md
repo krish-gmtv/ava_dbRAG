@@ -39,6 +39,14 @@ You should see `kind: saved_report_plan_v1`, filled slots, and selected blocks.
 
 ---
 
+## Shipped examples (in git)
+
+- `buyer_performance_report_v1.json` — narrative + KPI snapshot
+- `buyer_upsheets_listing_report_v1.json` — upsheet row listing
+- `buyer_opportunities_listing_report_v1.json` — opportunity row listing
+
+Draft templates named `test_*` or `verisoning_*` are local-only (see root `.gitignore`).
+
 ## Notes
 
 - Templates may run **semantic** blocks for narrative, but KPI/row listing blocks can be

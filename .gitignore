@@ -1,5 +1,6 @@
 .env
 .env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -17,3 +18,12 @@ Desktop.ini
 logs/
 .ava_session_cache.json
 scripts/.ava_session_cache.json
+
+# Personal / draft templates (keep only buyer_* examples in git)
+templates/saved_reports/test_*
+templates/saved_reports/testing_*
+templates/saved_reports/verisoning_*
+
+# Local venv
+.venv/
+python/

@@ -186,17 +186,12 @@ def template_from_doc_v1(doc: Dict[str, Any]) -> SavedReportTemplate:
 
 def load_template_docs_from_dir(dir_path: Path) -> Dict[str, SavedReportTemplate]:
     """
-    Load all ``*.json`` template docs from the directory.
-
-    Returns a mapping of template_id -> SavedReportTemplate.
+    Load active template docs from the directory (revision packages + legacy flat ``*.json``).
     """
-    out: Dict[str, SavedReportTemplate] = {}
-    if not dir_path.exists() or not dir_path.is_dir():
-        return out
+    from scripts.templates.template_versions_v1 import load_all_active_template_docs
 
-    for p in sorted(dir_path.glob("*.json")):
-        raw = p.read_text(encoding="utf-8")
-        doc = json.loads(raw)
+    out: Dict[str, SavedReportTemplate] = {}
+    for tid, doc in load_all_active_template_docs(dir_path).items():
         tpl = template_from_doc_v1(doc)
         out[tpl.template_id] = tpl
     return out

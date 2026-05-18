@@ -56,7 +56,12 @@ def _preview_tables_to_sections(x: Any) -> List[Dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         title = _str(item.get("title")) or _str(item.get("block_id")) or "Row preview"
+        explicit_cols = item.get("columns")
         table = _rows_to_table(item.get("rows"))
+        if isinstance(explicit_cols, list) and explicit_cols:
+            table["columns"] = [str(c) for c in explicit_cols]
+            if not table.get("rows"):
+                table["rows"] = []
         if table.get("columns"):
             out.append({"title": title, "table": table})
     return out

@@ -286,7 +286,7 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
             "row_count": result.get("row_count", 0),
         }
         supporting_details = {
-            "first_rows_preview": rows[:3],
+            "first_rows_preview": rows[:25],
         }
     elif query_type == "list_buyer_opportunities":
         rows = result.get("rows", []) or []
@@ -295,7 +295,7 @@ def render_precise(plan: Dict[str, Any], handler_output: Dict[str, Any]) -> Dict
             "total_opportunities": row_count,
         }
         supporting_details = {
-            "first_rows_preview": rows[:3],
+            "first_rows_preview": rows[:25],
         }
     else:
         # Safe fallback for any future precise handler.
